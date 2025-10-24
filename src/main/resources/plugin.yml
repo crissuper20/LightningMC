@@ -1,14 +1,10 @@
-main: ${PACKAGE}.${NAME}
+main: com.crissuper20.lightning.LightningPlugin
 name: ${NAME}
 version: "${VERSION}"
 api-version: "1.21.4"
-author: AUTHOR
-description: DESCRIPTION
+author: crissuper20
+description: lnbits on minecraft
 commands:
-  ex:
-    description: Base command for EXAMPLE
-    usage: "For a list of commands, type /ex help"
-    aliases: example
 permissions:
   example.test:
     description: DESCRIPTION

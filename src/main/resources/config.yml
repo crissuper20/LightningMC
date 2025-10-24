@@ -1,1 +1,8 @@
 # A journey of 1,000 lines starts with a single char
+debug: true
+
+lightning:
+  backend: "lnbits" # or "lnd"
+  api_url: "CHANGE_ME"
+  admin_key: "YOUR_ADMIN_KEY"
+  network: "testnet" # realworld money is against eula of Minecraft
