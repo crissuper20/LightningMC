@@ -23,7 +23,7 @@ public class LightningPlugin extends JavaPlugin {
         debugLogger = new DebugLogger(getLogger(), debug);
 
         debugLogger.info("Lightning Plugin starting up...");
-        debugLogger.info("Mode: TESTNET ONLY (Hardcoded - EULA Compliant)");
+        debugLogger.info("beware, using real money is against Minecraft EULA");
 
         // Validate configuration
         if (!validateConfig()) {
