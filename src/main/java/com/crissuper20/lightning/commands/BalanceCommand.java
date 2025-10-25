@@ -24,7 +24,7 @@ public class BalanceCommand implements CommandExecutor {
         plugin.getDebugLogger().debug("Fetching balance for " + player.getName());
 
         // TODO: fetch from LNService
-        player.sendMessage("lightning balance.");
+        player.sendMessage("Lightning balance for " + player.getName() + ": 0 sats (not implemented yet)");
 
         return true;
     }

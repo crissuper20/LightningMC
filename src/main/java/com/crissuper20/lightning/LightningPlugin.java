@@ -14,46 +14,186 @@ public class LightningPlugin extends JavaPlugin {
     @Override
     public void onEnable() {
         instance = this;
-        saveDefaultConfig(); // ensures config.yml exists
+        
+        // Create default config if it doesn't exist
+        saveDefaultConfig();
 
-        // Initialize debug logger
+        // Initialize debug logger first
         boolean debug = getConfig().getBoolean("debug", false);
         debugLogger = new DebugLogger(getLogger(), debug);
 
-        debugLogger.info("Hello nodenation. Lightning plugin starting up...(jk, will crash.)");
+        debugLogger.info("Lightning Plugin starting up...");
+        debugLogger.info("Mode: TESTNET ONLY (Hardcoded - EULA Compliant)");
 
-        // Initialize Lightning backend (LNbits / LND)
-        lnService = new LNService(this);
+        // Validate configuration
+        if (!validateConfig()) {
+            getLogger().severe("==============================================");
+            getLogger().severe("  PLUGIN DISABLED - INVALID CONFIGURATION");
+            getLogger().severe("==============================================");
+            getLogger().severe("Please check config.yml for required fields.");
+            getLogger().severe("==============================================");
+            
+            getServer().getPluginManager().disablePlugin(this);
+            return;
+        }
+
+        // Initialize Lightning service (handles both LNbits and LND)
+        try {
+            lnService = new LNService(this);
+            debugLogger.info("LNService initialized successfully");
+            debugLogger.info("Backend: " + lnService.getBackend());
+        } catch (Exception e) {
+            getLogger().severe("Failed to initialize LNService: " + e.getMessage());
+            e.printStackTrace();
+            getServer().getPluginManager().disablePlugin(this);
+            return;
+        }
+
+        // Test connection to Lightning backend
+        if (!testConnection()) {
+            getLogger().warning("==============================================");
+            getLogger().warning("  WARNING: Could not connect to backend");
+            getLogger().warning("==============================================");
+            getLogger().warning("Plugin will continue, but commands may fail.");
+            getLogger().warning("Please verify:");
+            getLogger().warning("  - Backend instance is running");
+            getLogger().warning("  - Credentials are correct");
+            getLogger().warning("  - Network connectivity");
+            
+            String backend = getConfig().getString("backend", "lnbits");
+            if (getConfig().getBoolean(backend + ".use_tor_proxy", false)) {
+                getLogger().warning("  - Tor proxy is running");
+            }
+            getLogger().warning("==============================================");
+        }
 
         // Register commands
         registerCommands();
 
-        // Register events (optional for now)
+        // Register events
         registerEvents();
 
-        debugLogger.info("Plugin enabled successfully!");
+        debugLogger.info("Lightning Plugin enabled successfully!");
     }
 
     @Override
     public void onDisable() {
-        debugLogger.info("Lightning plugin shutting down...");
+        debugLogger.info("Lightning Plugin shutting down...");
+        
         if (lnService != null) {
-            lnService.shutdown();
+            try {
+                lnService.shutdown();
+                debugLogger.info("LNService shutdown cleanly");
+            } catch (Exception e) {
+                getLogger().warning("Error during LNService shutdown: " + e.getMessage());
+            }
         }
-        debugLogger.info("Plugin disabled cleanly.");
+        
+        debugLogger.info("Lightning Plugin disabled.");
+    }
+
+    /**
+     * Validates that all required config fields are present
+     */
+    private boolean validateConfig() {
+        String backend = getConfig().getString("backend", "lnbits").toLowerCase();
+
+        if (backend.equals("lnd")) {
+            return validateLNDConfig();
+        } else {
+            return validateLNbitsConfig();
+        }
+    }
+
+    private boolean validateLNbitsConfig() {
+        String host = getConfig().getString("lnbits.host", "");
+        String apiKey = getConfig().getString("lnbits.api_key", "");
+
+        if (host.isEmpty()) {
+            getLogger().severe("Missing required config: lnbits.host");
+            return false;
+        }
+
+        if (apiKey.isEmpty()) {
+            getLogger().severe("Missing required config: lnbits.api_key");
+            return false;
+        }
+
+        if (apiKey.length() < 10) {
+            getLogger().severe("API key appears invalid (too short)");
+            return false;
+        }
+
+        return true;
+    }
+
+    private boolean validateLNDConfig() {
+        String host = getConfig().getString("lnd.host", "");
+        int port = getConfig().getInt("lnd.port", 0);
+        String macaroonHex = getConfig().getString("lnd.macaroon_hex", "");
+        String macaroonPath = getConfig().getString("lnd.macaroon_path", "");
+
+        if (host.isEmpty()) {
+            getLogger().severe("Missing required config: lnd.host");
+            return false;
+        }
+
+        if (port == 0) {
+            getLogger().severe("Missing required config: lnd.port");
+            return false;
+        }
+
+        if (macaroonHex.isEmpty() && macaroonPath.isEmpty()) {
+            getLogger().severe("Missing required config: lnd.macaroon_hex OR lnd.macaroon_path");
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * Tests connection to Lightning backend
+     */
+    private boolean testConnection() {
+        debugLogger.debug("Testing connection to backend...");
+        
+        try {
+            LNService.LNResponse<?> response = lnService.getWalletInfo();
+            
+            if (response.success) {
+                debugLogger.info("Successfully connected to backend!");
+                return true;
+            } else {
+                getLogger().warning("Connection test failed: " + response.error);
+                return false;
+            }
+        } catch (Exception e) {
+            getLogger().warning("Connection test failed: " + e.getMessage());
+            return false;
+        }
     }
 
     private void registerCommands() {
-        getCommand("balance").setExecutor(new BalanceCommand(this));
-        debugLogger.info("Registered /balance command.");
-        // Add more commands later: /pay, /invoice, etc.
+        try {
+            if (getCommand("balance") != null) {
+                getCommand("balance").setExecutor(new BalanceCommand(this));
+                debugLogger.info("Registered /balance command");
+            } else {
+                getLogger().warning("Could not register /balance - command not found in plugin.yml");
+            }
+            
+            // Add more commands later: /pay, /invoice, etc.
+        } catch (Exception e) {
+            getLogger().severe("Error registering commands: " + e.getMessage());
+        }
     }
 
     private void registerEvents() {
         // Example: getServer().getPluginManager().registerEvents(new PlayerJoinListener(), this);
-        debugLogger.info("Event listeners registered (none yet).");
+        debugLogger.debug("Event listeners ready (none registered yet)");
     }
 
+    // Getters
     public static LightningPlugin getInstance() {
         return instance;
     }
@@ -64,5 +204,20 @@ public class LightningPlugin extends JavaPlugin {
 
     public LNService getLnService() {
         return lnService;
+    }
+
+    /**
+     * Sends a formatted message to a player/console
+     */
+    public static String formatMessage(String message) {
+        return message;
+    }
+
+    public static String formatError(String message) {
+        return message;
+    }
+
+    public static String formatSuccess(String message) {
+        return message;
     }
 }

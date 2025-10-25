@@ -5,7 +5,28 @@ api-version: "1.21.4"
 author: crissuper20
 description: lnbits on minecraft
 commands:
+  balance:
+    description: Shows your Lightning balance
+    usage: /<command>
+    permission: lightning.balance
+  pay:
+    description: Pay another player over Lightning (stub)
+    usage: /<command> <player> <amount>
+    permission: lightning.pay
+  invoice:
+    description: Create an invoice (stub)
+    usage: /<command> <amount>
+    permission: lightning.invoice
 permissions:
+  lightning.balance:
+    description: Allows using /balance
+    default: true
+  lightning.pay:
+    description: Allows using /pay
+    default: true
+  lightning.invoice:
+    description: Allows using /invoice
+    default: true
   example.test:
     description: DESCRIPTION
     default: true

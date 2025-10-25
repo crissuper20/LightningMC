@@ -1,8 +1,84 @@
-# A journey of 1,000 lines starts with a single char
-debug: true
+# Lightning Plugin Configuration
+# ==========================================
+# IMPORTANT: MINECRAFT EULA COMPLIANCE
+# ==========================================
+# This plugin is HARDCODED to testnet/signet ONLY.
+# Real Bitcoin transactions violate Minecraft's EULA.
+# There is no option to enable mainnet.
+# ==========================================
 
-lightning:
-  backend: "lnbits" # or "lnd"
-  api_url: "CHANGE_ME"
-  admin_key: "YOUR_ADMIN_KEY"
-  network: "testnet" # realworld money is against eula of Minecraft
+# Enable debug logging (verbose output)
+debug: false
+
+# Lightning Backend Selection
+# Choose: "lnbits" or "lnd"
+backend: "lnbits"
+
+# LNbits Configuration (if backend: lnbits)
+lnbits:
+  # LNbits instance hostname (without https://)
+  # MUST be a testnet/signet instance
+  # Example: "testnet.lnbits.com" or "localhost:5000"
+  # For Tor: "yournode.onion" (no port needed, uses standard 80/443)
+  host: "legend.lnbits.com"
+  
+  # Use HTTPS connection (recommended for remote servers)
+  # Set to false for .onion addresses (Tor doesn't use HTTPS prefix)
+  use_https: true
+  
+  # Wallet ID (optional, but recommended for organization)
+  wallet_id: ""
+  
+  # API Key (Invoice/Read key or Admin key)
+  # Get this from your LNbits wallet settings
+  # NEVER share this key publicly!
+  api_key: "YOUR_API_KEY_HERE"
+  
+  # Tor/SOCKS5 Proxy Settings (for .onion addresses)
+  use_tor_proxy: false
+  tor_proxy_type: "socks5"     # Options: "socks5", "socks", "http", "https"
+  tor_proxy_host: "127.0.0.1"  # Local Tor SOCKS5 proxy
+  tor_proxy_port: 9050         # Default Tor SOCKS5 port
+
+# LND Configuration (if backend: lnd)
+lnd:
+  # LND REST API host (.onion or clearnet)
+  # Example: "localhost" or "abc123xyz.onion"
+  host: "localhost"
+  
+  # LND REST API port (default: 8080)
+  port: 8080
+  
+  # Use HTTPS (true for clearnet, false for .onion)
+  use_https: true
+  
+  # Macaroon authentication (choose ONE method):
+  
+  # Method 1: Path to macaroon file (e.g., admin.macaroon)
+  # Example: "/home/bitcoin/.lnd/data/chain/bitcoin/testnet/admin.macaroon"
+  macaroon_path: ""
+  
+  # Method 2: Macaroon as hex string (better for .onion nodes)
+  # Get with: xxd -ps -u -c 1000 admin.macaroon
+  macaroon_hex: ""
+  
+  # Tor proxy settings (for .onion LND nodes)
+  use_tor_proxy: false
+  tor_proxy_host: "127.0.0.1"
+  tor_proxy_port: 9050
+
+# ==========================================
+# TESTNET RESOURCES
+# ==========================================
+# Need testnet Bitcoin? Get some from faucets:
+# - https://coinfaucet.eu/en/btc-testnet/
+# - https://testnet-faucet.mempool.co/
+#
+# LNbits instances:
+# - https://legend.lnbits.com (supports testnet)
+# - Host your own: https://github.com/lnbits/lnbits
+#
+# LND Setup:
+# - REST API: https://api.lightning.community/rest/
+# - Get macaroon hex: xxd -ps -u -c 1000 admin.macaroon
+# ==========================================
