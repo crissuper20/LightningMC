@@ -32,7 +32,7 @@ jobs:
       run: ./gradlew clean shadowJar
       
     - name: Upload build artifacts
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: Plugin JAR
         path: build/libs/*-all.jar
