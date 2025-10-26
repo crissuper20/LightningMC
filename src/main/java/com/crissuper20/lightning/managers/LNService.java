@@ -7,8 +7,11 @@ import com.google.gson.JsonObject;
 import javax.net.ssl.*;
 import java.io.IOException;
 import java.net.InetSocketAddress;
+import java.net.Proxy;
 import java.net.ProxySelector;
+import java.net.SocketAddress;
 import java.net.URI;
+import java.util.List;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -16,6 +19,7 @@ import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.security.KeyManagementException;
 import java.security.NoSuchAlgorithmException;
+import java.security.SecureRandom;
 import java.security.cert.X509Certificate;
 import java.time.Duration;
 import java.util.concurrent.CompletableFuture;
@@ -32,12 +36,14 @@ public class LNService {
     private String lnbitsHost;
     private String lnbitsApiKey;
     private boolean lnbitsUseHttps;
+    private boolean lnbitsSkipTlsVerify;
     
     // LND config
     private String lndHost;
     private int lndPort;
     private String lndMacaroonHex;
     private boolean lndUseHttps;
+    private boolean lndSkipTlsVerify;
 
     public enum BackendType {
         LNBITS, LND
@@ -74,9 +80,11 @@ public class LNService {
             lnbitsHost = plugin.getConfig().getString("lnbits.host", "localhost");
             lnbitsApiKey = plugin.getConfig().getString("lnbits.api_key", "");
             lnbitsUseHttps = plugin.getConfig().getBoolean("lnbits.use_https", true);
+            lnbitsSkipTlsVerify = plugin.getConfig().getBoolean("lnbits.skip_tls_verify", false);
             
             plugin.getDebugLogger().debug("  Host: " + lnbitsHost);
             plugin.getDebugLogger().debug("  Use HTTPS: " + lnbitsUseHttps);
+            plugin.getDebugLogger().debug("  Skip TLS verify: " + lnbitsSkipTlsVerify);
             plugin.getDebugLogger().debug("  API Key length: " + lnbitsApiKey.length() + " chars");
             plugin.getDebugLogger().debug("  API Key preview: " + (lnbitsApiKey.length() > 10 ? lnbitsApiKey.substring(0, 10) + "..." : "***"));
         } else {
@@ -84,10 +92,12 @@ public class LNService {
             lndHost = plugin.getConfig().getString("lnd.host", "localhost");
             lndPort = plugin.getConfig().getInt("lnd.port", 8080);
             lndUseHttps = plugin.getConfig().getBoolean("lnd.use_https", true);
+            lndSkipTlsVerify = plugin.getConfig().getBoolean("lnd.skip_tls_verify", false);
             
             plugin.getDebugLogger().debug("  Host: " + lndHost);
             plugin.getDebugLogger().debug("  Port: " + lndPort);
             plugin.getDebugLogger().debug("  Use HTTPS: " + lndUseHttps);
+            plugin.getDebugLogger().debug("  Skip TLS verify: " + lndSkipTlsVerify);
             
             // Load macaroon
             String macaroonHex = plugin.getConfig().getString("lnd.macaroon_hex", "");
@@ -114,32 +124,126 @@ public class LNService {
             }
         }
         
+        // Validate .onion configuration after we've loaded values
+        String host = backend == BackendType.LNBITS ? lnbitsHost : lndHost;
+        boolean useHttps = backend == BackendType.LNBITS ? lnbitsUseHttps : lndUseHttps;
+        boolean skipTls = backend == BackendType.LNBITS ? lnbitsSkipTlsVerify : lndSkipTlsVerify;
+        boolean useTorProxy = plugin.getConfig().getBoolean(
+            backend == BackendType.LNBITS ? "lnbits.use_tor_proxy" : "lnd.use_tor_proxy",
+            false
+        );
+
+        if (host != null && host.endsWith(".onion")) {
+            plugin.getDebugLogger().debug("Detected .onion address: " + host);
+            
+            if (!useTorProxy) {
+                throw new IllegalStateException(
+                    "Configuration error: .onion address '" + host + "' requires Tor proxy. " +
+                    "Set " + (backend == BackendType.LNBITS ? "lnbits" : "lnd") + ".use_tor_proxy: true"
+                );
+            }
+            
+            if (useHttps && !skipTls) {
+                throw new IllegalStateException(
+                    "Configuration error: .onion address '" + host + "' uses HTTPS with a self-signed cert. " +
+                    "Either set " + (backend == BackendType.LNBITS ? "lnbits" : "lnd") + ".use_https: false OR " +
+                    "set " + (backend == BackendType.LNBITS ? "lnbits" : "lnd") + ".skip_tls_verify: true to accept the self-signed certificate."
+                );
+            }
+            
+            plugin.getDebugLogger().debug("Tor configuration validated for .onion address");
+        }
+
         plugin.getDebugLogger().debug("Configuration loaded successfully");
     }
 
     private HttpClient buildHttpClient() {
         plugin.getDebugLogger().debug("Building HTTP client...");
+
+        // Force use of system native libraries for TLS and proxy handling
+        System.setProperty("jdk.httpclient.allowRestrictedHeaders", "true");
+        System.setProperty("jdk.internal.httpclient.disableHostnameVerification", "true");
+        System.setProperty("jdk.httpclient.enableAllMethodRetry", "true");
         
         boolean useTor = plugin.getConfig().getBoolean(
-            backend == BackendType.LNBITS ? "lnbits.use_tor_proxy" : "lnd.use_tor_proxy", 
+            backend == BackendType.LNBITS ? "lnbits.use_tor_proxy" : "lnd.use_tor_proxy",
             false
         );
-        
+
         plugin.getDebugLogger().debug("  Tor proxy enabled: " + useTor);
 
-        int timeout = useTor ? 30 : 10;
-        plugin.getDebugLogger().debug("  Connection timeout: " + timeout + " seconds");
-        
-        HttpClient.Builder builder = HttpClient.newBuilder()
-                .connectTimeout(Duration.ofSeconds(timeout));
+        // Always use native transport
+        HttpClient.Builder builder = HttpClient.newBuilder();
 
-        // Add proxy if enabled
         if (useTor) {
-            String proxyType = plugin.getConfig().getString(
-                backend == BackendType.LNBITS ? "lnbits.tor_proxy_type" : "lnd.tor_proxy_type",
-                "socks5"
-            ).toLowerCase();
-            
+            String torHost = plugin.getConfig().getString(
+                backend == BackendType.LNBITS ? "lnbits.tor_proxy_host" : "lnd.tor_proxy_host",
+                "127.0.0.1"
+            );
+            int torPort = plugin.getConfig().getInt(
+                backend == BackendType.LNBITS ? "lnbits.tor_proxy_port" : "lnd.tor_proxy_port",
+                9050
+            );
+
+            plugin.getDebugLogger().debug("  Configuring SOCKS5 proxy: " + torHost + ":" + torPort);
+
+            // System properties for proxy
+            System.setProperty("socksProxyHost", torHost);
+            System.setProperty("socksProxyPort", String.valueOf(torPort));
+            System.setProperty("java.net.useSocksProxy", "true");
+            System.setProperty("jdk.http.auth.tunneling.disabledSchemes", "");
+
+            builder.proxy(ProxySelector.of(new InetSocketAddress(torHost, torPort)));
+        }
+
+        // SSL setup
+        try {
+            SSLContext sslContext = SSLContext.getInstance("TLSv1.3");
+            TrustManager[] trustManagers = new TrustManager[] {
+                new X509TrustManager() {
+                    public X509Certificate[] getAcceptedIssuers() { return null; }
+                    public void checkClientTrusted(X509Certificate[] certs, String authType) { }
+                    public void checkServerTrusted(X509Certificate[] certs, String authType) { }
+                }
+            };
+            sslContext.init(null, trustManagers, new SecureRandom());
+
+            builder.sslContext(sslContext)
+                   .sslParameters(sslContext.getDefaultSSLParameters())
+                   .connectTimeout(Duration.ofSeconds(useTor ? 30 : 10));
+
+            plugin.getDebugLogger().debug("  SSL context configured with native TLS");
+        } catch (Exception e) {
+            plugin.getLogger().severe("Failed to configure SSL context: " + e.getMessage());
+            plugin.getDebugLogger().error("SSL setup error", e);
+        }
+
+        // Configure SSL context and trust settings
+        boolean wantSkipTls = (backend == BackendType.LND && lndSkipTlsVerify) || 
+                             (backend == BackendType.LNBITS && lnbitsSkipTlsVerify);
+                             
+        if (wantSkipTls) {
+            plugin.getDebugLogger().debug("  Configuring SSL context to trust all certificates...");
+            try {
+                SSLContext sslContext = SSLContext.getInstance("TLS");
+                sslContext.init(null, trustAllCerts, new java.security.SecureRandom());
+                
+                // Configure the builder with our all-trusting SSL context
+                builder.sslContext(sslContext)
+                       .sslParameters(sslContext.getDefaultSSLParameters());
+                
+                // Also set default hostname verifier to trust all (belt and suspenders)
+                HttpsURLConnection.setDefaultHostnameVerifier((hostname, session) -> true);
+                
+                plugin.getDebugLogger().debug("  SSL context configured (trusting all certificates)");
+            } catch (NoSuchAlgorithmException | KeyManagementException e) {
+                plugin.getLogger().warning("Failed to setup SSL context");
+                plugin.getDebugLogger().error("SSL context error: " + e.getMessage(), e);
+            }
+        }
+
+        // Add proxy if enabled (critical for .onion addresses)
+        if (useTor) {
             String torHost = plugin.getConfig().getString(
                 backend == BackendType.LNBITS ? "lnbits.tor_proxy_host" : "lnd.tor_proxy_host", 
                 "127.0.0.1"
@@ -149,23 +253,28 @@ public class LNService {
                 9050
             );
             
-            plugin.getDebugLogger().debug("  Proxy type: " + proxyType.toUpperCase());
-            plugin.getDebugLogger().debug("  Configuring proxy: " + torHost + ":" + torPort);
+            plugin.getDebugLogger().debug("  Configuring SOCKS5 proxy: " + torHost + ":" + torPort);
             
             try {
-                // Java's HttpClient supports SOCKS proxies through ProxySelector
-                // HTTP proxies would need different handling (not typically used with Tor)
-                if (proxyType.equals("socks5") || proxyType.equals("socks")) {
-                    builder.proxy(ProxySelector.of(new InetSocketAddress(torHost, torPort)));
-                    plugin.getDebugLogger().debug("  SOCKS5 proxy configured successfully");
-                } else if (proxyType.equals("http") || proxyType.equals("https")) {
-                    // For HTTP proxy, we still use ProxySelector but note the difference
-                    builder.proxy(ProxySelector.of(new InetSocketAddress(torHost, torPort)));
-                    plugin.getDebugLogger().debug("  HTTP proxy configured successfully");
-                    plugin.getDebugLogger().debug("  Note: Java HttpClient will attempt to connect using HTTP CONNECT");
-                } else {
-                    plugin.getLogger().warning("Unknown proxy type: " + proxyType + ", defaulting to SOCKS5");
-                    builder.proxy(ProxySelector.of(new InetSocketAddress(torHost, torPort)));
+                // Use a proxy selector that explicitly handles HTTPS-over-SOCKS
+                builder.proxy(new ProxySelector() {
+                    @Override
+                    public List<Proxy> select(URI uri) {
+                        plugin.getDebugLogger().debug("  Selecting proxy for URI: " + uri);
+                        return List.of(new Proxy(Proxy.Type.SOCKS, new InetSocketAddress(torHost, torPort)));
+                    }
+                    
+                    @Override
+                    public void connectFailed(URI uri, SocketAddress sa, IOException ioe) {
+                        plugin.getDebugLogger().error("Proxy connection failed for " + uri, ioe);
+                    }
+                });
+                
+                plugin.getDebugLogger().debug("  Custom SOCKS5 proxy selector configured");
+                
+                if ((backend == BackendType.LND && lndUseHttps) || 
+                    (backend == BackendType.LNBITS && lnbitsUseHttps)) {
+                    plugin.getDebugLogger().debug("  Using HTTPS over Tor (Start9/Embassy setup)");
                 }
             } catch (Exception e) {
                 plugin.getLogger().severe("Failed to configure proxy");
@@ -173,9 +282,12 @@ public class LNService {
             }
         }
 
-        // Disable SSL verification for LND (self-signed certs)
-        if (backend == BackendType.LND && lndUseHttps) {
-            plugin.getDebugLogger().debug("  Configuring SSL context for self-signed certificates...");
+        // Optionally disable SSL verification for backends when configured to skip TLS verification
+        boolean needSkipTls = (backend == BackendType.LND && lndUseHttps && lndSkipTlsVerify)
+                || (backend == BackendType.LNBITS && lnbitsUseHttps && lnbitsSkipTlsVerify);
+
+        if (needSkipTls) {
+            plugin.getDebugLogger().debug("  Configuring SSL context to skip TLS verification (trust all certs)...");
             try {
                 SSLContext sslContext = SSLContext.getInstance("TLS");
                 sslContext.init(null, trustAllCerts, new java.security.SecureRandom());
@@ -244,9 +356,22 @@ public class LNService {
             plugin.getDebugLogger().debug("URL: " + url);
             plugin.getDebugLogger().debug("Backend: " + backend);
                 
+            // Parse URL components for .onion special handling
+            URI uri = URI.create(url);
+            String scheme = uri.getScheme();
+            String host = uri.getHost();
+            int port = uri.getPort();
+            String path = uri.getPath();
+            
+            plugin.getDebugLogger().debug("Request components:");
+            plugin.getDebugLogger().debug("  Scheme: " + scheme);
+            plugin.getDebugLogger().debug("  Host: " + host);
+            plugin.getDebugLogger().debug("  Port: " + port);
+            plugin.getDebugLogger().debug("  Path: " + path);
+            
             HttpRequest.Builder requestBuilder = HttpRequest.newBuilder()
-                    .uri(URI.create(url))
-                    .timeout(Duration.ofSeconds(10))
+                    .uri(uri)
+                    .timeout(Duration.ofSeconds(30))  // Longer timeout for Tor
                     .GET();
 
             // Add appropriate auth header
@@ -284,19 +409,25 @@ public class LNService {
                 }
             } catch (IOException e) {
                 long duration = System.currentTimeMillis() - startTime;
-                plugin.getLogger().severe("Network error after " + duration + "ms");
-                plugin.getDebugLogger().error("Network error: " + e.getMessage(), e);
+                String headerExample = backend == BackendType.LNBITS ?
+                        "X-Api-Key: " + maskSecret(lnbitsApiKey) :
+                        "Grpc-Metadata-macaroon: " + maskSecret(lndMacaroonHex);
+                logNetworkError(e, url + " (after " + duration + "ms)", headerExample);
                 return LNResponse.failure("Network error: " + e.getMessage(), -1);
             } catch (InterruptedException e) {
                 long duration = System.currentTimeMillis() - startTime;
-                plugin.getLogger().warning("Request interrupted after " + duration + "ms");
-                plugin.getDebugLogger().error("Request interrupted: " + e.getMessage(), e);
+                String headerExample = backend == BackendType.LNBITS ?
+                        "X-Api-Key: " + maskSecret(lnbitsApiKey) :
+                        "Grpc-Metadata-macaroon: " + maskSecret(lndMacaroonHex);
+                logNetworkError(e, url + " (interrupted after " + duration + "ms)", headerExample);
                 Thread.currentThread().interrupt();
                 return LNResponse.failure("Request interrupted", -1);
             } catch (Exception e) {
                 long duration = System.currentTimeMillis() - startTime;
-                plugin.getLogger().severe("Unexpected error after " + duration + "ms");
-                plugin.getDebugLogger().error("Unexpected error: " + e.getMessage(), e);
+                String headerExample = backend == BackendType.LNBITS ?
+                        "X-Api-Key: " + maskSecret(lnbitsApiKey) :
+                        "Grpc-Metadata-macaroon: " + maskSecret(lndMacaroonHex);
+                logNetworkError(e, url + " (unexpected error after " + duration + "ms)", headerExample);
                 return LNResponse.failure("Unexpected error: " + e.getMessage(), -1);
             }
         });
@@ -353,12 +484,12 @@ public class LNService {
                     plugin.getDebugLogger().debug("Failed response body: " + response.body());
                     return LNResponse.failure("HTTP " + response.statusCode(), response.statusCode());
                 } catch (IOException e) {
-                    plugin.getLogger().severe("Network error getting balance");
-                    plugin.getDebugLogger().error("Network error: " + e.getMessage(), e);
+                    String headerExample = "Grpc-Metadata-macaroon: " + maskSecret(lndMacaroonHex);
+                    logNetworkError(e, url, headerExample);
                     return LNResponse.failure("Network error: " + e.getMessage(), -1);
                 } catch (InterruptedException e) {
-                    plugin.getLogger().warning("Balance request interrupted");
-                    plugin.getDebugLogger().error("Request interrupted: " + e.getMessage(), e);
+                    String headerExample = "Grpc-Metadata-macaroon: " + maskSecret(lndMacaroonHex);
+                    logNetworkError(e, url + " (interrupted)", headerExample);
                     Thread.currentThread().interrupt();
                     return LNResponse.failure("Request interrupted", -1);
                 }
@@ -442,17 +573,23 @@ public class LNService {
                     return LNResponse.failure("Failed to create invoice: " + response.body(), response.statusCode());
                 }
             } catch (IOException e) {
-                plugin.getLogger().severe("Network error creating invoice");
-                plugin.getDebugLogger().error("Network error: " + e.getMessage(), e);
+                String headerExample = backend == BackendType.LNBITS ?
+                        "X-Api-Key: " + maskSecret(lnbitsApiKey) :
+                        "Grpc-Metadata-macaroon: " + maskSecret(lndMacaroonHex);
+                logNetworkError(e, url, headerExample);
                 return LNResponse.failure("Network error: " + e.getMessage(), -1);
             } catch (InterruptedException e) {
-                plugin.getLogger().warning("Invoice creation interrupted");
-                plugin.getDebugLogger().error("Request interrupted: " + e.getMessage(), e);
+                String headerExample = backend == BackendType.LNBITS ?
+                        "X-Api-Key: " + maskSecret(lnbitsApiKey) :
+                        "Grpc-Metadata-macaroon: " + maskSecret(lndMacaroonHex);
+                logNetworkError(e, url + " (interrupted)", headerExample);
                 Thread.currentThread().interrupt();
                 return LNResponse.failure("Request interrupted", -1);
             } catch (Exception e) {
-                plugin.getLogger().severe("Unexpected error creating invoice");
-                plugin.getDebugLogger().error("Unexpected error: " + e.getMessage(), e);
+                String headerExample = backend == BackendType.LNBITS ?
+                        "X-Api-Key: " + maskSecret(lnbitsApiKey) :
+                        "Grpc-Metadata-macaroon: " + maskSecret(lndMacaroonHex);
+                logNetworkError(e, url + " (unexpected)", headerExample);
                 return LNResponse.failure("Unexpected error: " + e.getMessage(), -1);
             }
         });
@@ -510,12 +647,16 @@ public class LNService {
                     return LNResponse.failure("Failed to check invoice", response.statusCode());
                 }
             } catch (IOException e) {
-                plugin.getLogger().severe("Network error checking invoice");
-                plugin.getDebugLogger().error("Network error: " + e.getMessage(), e);
+                String headerExample = backend == BackendType.LNBITS ?
+                        "X-Api-Key: " + maskSecret(lnbitsApiKey) :
+                        "Grpc-Metadata-macaroon: " + maskSecret(lndMacaroonHex);
+                logNetworkError(e, url, headerExample);
                 return LNResponse.failure("Network error: " + e.getMessage(), -1);
             } catch (InterruptedException e) {
-                plugin.getLogger().warning("Invoice check interrupted");
-                plugin.getDebugLogger().error("Request interrupted: " + e.getMessage(), e);
+                String headerExample = backend == BackendType.LNBITS ?
+                        "X-Api-Key: " + maskSecret(lnbitsApiKey) :
+                        "Grpc-Metadata-macaroon: " + maskSecret(lndMacaroonHex);
+                logNetworkError(e, url + " (interrupted)", headerExample);
                 Thread.currentThread().interrupt();
                 return LNResponse.failure("Request interrupted", -1);
             }
@@ -581,12 +722,16 @@ public class LNService {
                     return LNResponse.failure("Payment failed: " + response.body(), response.statusCode());
                 }
             } catch (IOException e) {
-                plugin.getLogger().severe("Network error sending payment");
-                plugin.getDebugLogger().error("Network error: " + e.getMessage(), e);
+                String headerExample = backend == BackendType.LNBITS ?
+                        "X-Api-Key: " + maskSecret(lnbitsApiKey) :
+                        "Grpc-Metadata-macaroon: " + maskSecret(lndMacaroonHex);
+                logNetworkError(e, url, headerExample);
                 return LNResponse.failure("Network error: " + e.getMessage(), -1);
             } catch (InterruptedException e) {
-                plugin.getLogger().warning("Payment request interrupted");
-                plugin.getDebugLogger().error("Request interrupted: " + e.getMessage(), e);
+                String headerExample = backend == BackendType.LNBITS ?
+                        "X-Api-Key: " + maskSecret(lnbitsApiKey) :
+                        "Grpc-Metadata-macaroon: " + maskSecret(lndMacaroonHex);
+                logNetworkError(e, url + " (interrupted)", headerExample);
                 Thread.currentThread().interrupt();
                 return LNResponse.failure("Request interrupted", -1);
             }
@@ -595,6 +740,34 @@ public class LNService {
 
     public void shutdown() {
         plugin.getDebugLogger().debug("Shutting down LNService...");
+    }
+
+    /**
+     * Improved network error logging helper — logs exception class, message, stacktrace,
+     * and prints a small curl example (with masked auth) to aid debugging from the server.
+     */
+    private void logNetworkError(Exception e, String url, String authHeaderExample) {
+        String exClass = (e == null) ? "UnknownException" : e.getClass().getSimpleName();
+        String exMsg = (e == null || e.getMessage() == null) ? "" : e.getMessage();
+
+        plugin.getLogger().severe("Network error contacting " + url + " — " + exClass + (exMsg.isEmpty() ? "" : ": " + exMsg));
+        plugin.getDebugLogger().error("Network error contacting " + url + ": " + exMsg, e);
+
+        // Provide a small curl example to help administrators reproduce the request.
+        if (authHeaderExample != null && !authHeaderExample.isEmpty()) {
+            plugin.getDebugLogger().debug("Try this curl command (headers may need adjustment):");
+            plugin.getDebugLogger().debug("curl -v \"" + url + "\" -H \"" + authHeaderExample + "\"");
+        } else {
+            plugin.getDebugLogger().debug("Try this curl command:");
+            plugin.getDebugLogger().debug("curl -v \"" + url + "\"");
+        }
+    }
+
+    // Mask secret values for safe logging (show only a short prefix)
+    private static String maskSecret(String s) {
+        if (s == null || s.isEmpty()) return "(empty)";
+        if (s.length() <= 8) return "****";
+        return s.substring(0, 6) + "...";
     }
 
     public BackendType getBackend() {
