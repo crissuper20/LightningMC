@@ -599,6 +599,37 @@ public class LNService {
         return createInvoiceAsync(amountSats, memo).join();
     }
 
+    public LNResponse<Long> getWalletBalance(String walletId) {
+        if (backend != BackendType.LNBITS) {
+            // For LND, we just use the main wallet balance
+            return getBalanceAsync().join();
+        }
+
+        String url = baseUrl() + "/wallet";
+        plugin.getDebugLogger().debug("Fetching balance for wallet: " + walletId);
+            
+        HttpRequest.Builder requestBuilder = HttpRequest.newBuilder()
+            .uri(URI.create(url))
+            .timeout(Duration.ofSeconds(30))
+            .header("X-Api-Key", walletId) // Use wallet-specific API key
+            .GET();
+
+        try {
+            HttpResponse<String> response = client.send(requestBuilder.build(), HttpResponse.BodyHandlers.ofString());
+            
+            if (response.statusCode() == 200) {
+                JsonObject data = gson.fromJson(response.body(), JsonObject.class);
+                long balanceMsat = data.get("balance").getAsLong();
+                long balance = balanceMsat / 1000; // Convert msat to sat
+                return LNResponse.success(balance, response.statusCode());
+            }
+            return LNResponse.failure("Failed to fetch balance: HTTP " + response.statusCode(), response.statusCode());
+        } catch (Exception e) {
+            plugin.getDebugLogger().error("Error fetching balance for wallet " + walletId, e);
+            return LNResponse.failure("Failed to fetch balance: " + e.getMessage(), -1);
+        }
+    }
+
     /** Check if invoice is paid (works for both backends) */
     public CompletableFuture<LNResponse<Boolean>> checkInvoiceAsync(String paymentHash) {
         return CompletableFuture.supplyAsync(() -> {

@@ -2,7 +2,9 @@ package com.crissuper20.lightning;
 
 import com.crissuper20.lightning.util.DebugLogger;
 import com.crissuper20.lightning.managers.LNService;
+import com.crissuper20.lightning.managers.WalletManager;
 import com.crissuper20.lightning.commands.BalanceCommand;
+import com.crissuper20.lightning.commands.WalletCommand;
 import org.bukkit.plugin.java.JavaPlugin;
 
 public class LightningPlugin extends JavaPlugin {
@@ -10,6 +12,7 @@ public class LightningPlugin extends JavaPlugin {
     private static LightningPlugin instance;
     private DebugLogger debugLogger;
     private LNService lnService;
+    private WalletManager walletManager;
 
     @Override
     public void onEnable() {
@@ -42,6 +45,10 @@ public class LightningPlugin extends JavaPlugin {
             lnService = new LNService(this);
             debugLogger.info("LNService initialized successfully");
             debugLogger.info("Backend: " + lnService.getBackend());
+            
+            // Initialize wallet manager
+            walletManager = new WalletManager(this);
+            debugLogger.info("WalletManager initialized successfully");
         } catch (Exception e) {
             getLogger().severe("Failed to initialize LNService: " + e.getMessage());
             e.printStackTrace();
@@ -115,13 +122,15 @@ public class LightningPlugin extends JavaPlugin {
         }
 
         if (apiKey.isEmpty()) {
-            getLogger().severe("Missing required config: lnbits.api_key");
-            return false;
-        }
-
-        if (apiKey.length() < 10) {
-            getLogger().severe("API key appears invalid (too short)");
-            return false;
+            getLogger().warning("==============================================");
+            getLogger().warning("  WARNING: No API key configured");
+            getLogger().warning("==============================================");
+            getLogger().warning("The plugin will work in read-only mode.");
+            getLogger().warning("Set lnbits.api_key in config.yml to enable");
+            getLogger().warning("full functionality.");
+            getLogger().warning("==============================================");
+        } else if (apiKey.length() < 10) {
+            getLogger().warning("API key appears invalid (too short)");
         }
 
         return true;
@@ -182,6 +191,13 @@ public class LightningPlugin extends JavaPlugin {
                 getLogger().warning("Could not register /balance - command not found in plugin.yml");
             }
             
+            if (getCommand("wallet") != null) {
+                getCommand("wallet").setExecutor(new WalletCommand(this, walletManager));
+                debugLogger.info("Registered /wallet command");
+            } else {
+                getLogger().warning("Could not register /wallet - command not found in plugin.yml");
+            }
+            
             // Add more commands later: /pay, /invoice, etc.
         } catch (Exception e) {
             getLogger().severe("Error registering commands: " + e.getMessage());
@@ -204,6 +220,10 @@ public class LightningPlugin extends JavaPlugin {
 
     public LNService getLnService() {
         return lnService;
+    }
+
+    public WalletManager getWalletManager() {
+        return walletManager;
     }
 
     /**

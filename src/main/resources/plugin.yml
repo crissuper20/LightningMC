@@ -17,6 +17,10 @@ commands:
     description: Create an invoice (stub)
     usage: /<command> <amount>
     permission: lightning.invoice
+  wallet:
+    description: View or create your Lightning wallet
+    usage: /<command>
+    permission: lightning.wallet
 permissions:
   lightning.balance:
     description: Allows using /balance
@@ -26,6 +30,9 @@ permissions:
     default: true
   lightning.invoice:
     description: Allows using /invoice
+    default: true
+  lightning.wallet:
+    description: Allows using /wallet
     default: true
   example.test:
     description: DESCRIPTION

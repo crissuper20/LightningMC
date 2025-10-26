@@ -32,7 +32,8 @@ lnbits:
   # API Key (Invoice/Read key or Admin key)
   # Get this from your LNbits wallet settings
   # NEVER share this key publicly!
-  api_key: "YOUR_API_KEY_HERE"
+  # Optional: If not set, plugin will work in read-only mode
+  api_key: ""
   
   # Tor/SOCKS5 Proxy Settings (for .onion addresses)
   use_tor_proxy: false
