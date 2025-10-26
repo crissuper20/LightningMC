@@ -1,4 +1,4 @@
-name: Java CI with Gradle
+name: fixed Java CI for this plugin
 
 on:
   push:
@@ -16,10 +16,10 @@ jobs:
     steps:
     - uses: actions/checkout@v3
     
-    - name: Set up JDK 17
+    - name: Set up JDK 21
       uses: actions/setup-java@v3
       with:
-        java-version: '17'
+        java-version: '21'
         distribution: 'temurin'
         
     - name: Setup Gradle
@@ -29,10 +29,10 @@ jobs:
       run: chmod +x ./gradlew
       
     - name: Build with Gradle
-      run: ./gradlew build
+      run: ./gradlew clean shadowJar
       
     - name: Upload build artifacts
       uses: actions/upload-artifact@v3
       with:
         name: Plugin JAR
-        path: build/libs/*.jar
+        path: build/libs/*-all.jar
