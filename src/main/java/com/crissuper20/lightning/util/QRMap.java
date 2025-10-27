@@ -3,7 +3,6 @@ package com.crissuper20.lightning.util;
 import com.crissuper20.lightning.LightningPlugin;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
-
 import java.lang.reflect.Method;
 
 /**
