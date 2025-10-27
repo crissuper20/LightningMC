@@ -33,3 +33,9 @@ System Volume Information/
 build/
 .gradle/
 .vscode/
+.idea/ 
+*.log
+*.tmp
+out/
+logs/
+temp/
