@@ -48,7 +48,7 @@ backend: lnbits
 debug: false
 
 lnbits:
-  host: "legend.lnbits.com"
+  host: "demo.lnbits.com"
   use_https: true
   wallet_id: ""
   api_key: "your_invoice_key_here"

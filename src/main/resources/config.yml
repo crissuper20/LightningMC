@@ -1,11 +1,3 @@
-# Lightning Plugin Configuration
-# ==========================================
-# IMPORTANT: MINECRAFT EULA COMPLIANCE
-# ==========================================
-# This plugin is HARDCODED to testnet/signet ONLY.
-# Real money use for Minecraft servers is not allowed
-# There is no option to enable mainnet.
-# ==========================================
 
 # Enable debug logging (verbose output)
 debug: false
@@ -20,7 +12,7 @@ lnbits:
   # MUST be a testnet/signet instance
   # Example: "testnet.lnbits.com" or "localhost:5000"
   # For Tor: "yournode.onion" (no port needed, uses standard 80/443)
-  host: "legend.lnbits.com"
+  host: "demo.lnbits.com"
   
   # Use HTTPS connection (recommended for remote servers)
   # Set to false for .onion addresses (Tor doesn't use HTTPS prefix)
