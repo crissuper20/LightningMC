@@ -289,8 +289,8 @@ permissions:
 ## Building from Source
 
 ### Prerequisites
-- Java 21 or higher
-- Maven 3.6+
+- Java 21 or higher (I used Temurin)
+- Gradle ~8.5 (i think)
 
 ### Build Steps
 ```bash
