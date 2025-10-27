@@ -5,7 +5,11 @@ import com.crissuper20.lightning.managers.LNService;
 import com.crissuper20.lightning.managers.WalletManager;
 import com.crissuper20.lightning.commands.BalanceCommand;
 import com.crissuper20.lightning.commands.WalletCommand;
+import com.crissuper20.lightning.commands.InvoiceCommand;
 import org.bukkit.plugin.java.JavaPlugin;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeoutException;
 
 public class LightningPlugin extends JavaPlugin {
 
@@ -167,8 +171,10 @@ public class LightningPlugin extends JavaPlugin {
         debugLogger.debug("Testing connection to backend...");
         
         try {
-            LNService.LNResponse<?> response = lnService.getWalletInfo();
-            
+            // Use async API with a short timeout to avoid hanging startup indefinitely.
+            LNService.LNResponse<?> response = lnService.getWalletInfoAsync()
+                    .get(5, TimeUnit.SECONDS);
+
             if (response.success) {
                 debugLogger.info("Successfully connected to backend!");
                 return true;
@@ -176,8 +182,22 @@ public class LightningPlugin extends JavaPlugin {
                 getLogger().warning("Connection test failed: " + response.error);
                 return false;
             }
+        } catch (TimeoutException e) {
+            getLogger().warning("Connection test timed out (backend did not respond within 5s)");
+            debugLogger.error("Connection test timeout", e);
+            return false;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            getLogger().warning("Connection test interrupted: " + e.getMessage());
+            debugLogger.error("Connection test interrupted", e);
+            return false;
+        } catch (ExecutionException e) {
+            getLogger().warning("Connection test failed: " + e.getCause().getMessage());
+            debugLogger.error("Connection test execution error", e.getCause());
+            return false;
         } catch (Exception e) {
             getLogger().warning("Connection test failed: " + e.getMessage());
+            debugLogger.error("Connection test unexpected error", e);
             return false;
         }
     }
@@ -198,9 +218,17 @@ public class LightningPlugin extends JavaPlugin {
                 getLogger().warning("Could not register /wallet - command not found in plugin.yml");
             }
             
-            // Add more commands later: /pay, /invoice, etc.
+            if (getCommand("invoice") != null) {
+                getCommand("invoice").setExecutor(new InvoiceCommand(this));
+                debugLogger.info("Registered /invoice command");
+            } else {
+                getLogger().warning("Could not register /invoice - command not found in plugin.yml");
+            }
+            
+            // Add more commands later: /pay, etc.
         } catch (Exception e) {
             getLogger().severe("Error registering commands: " + e.getMessage());
+            debugLogger.error("Command registration error", e);
         }
     }
 

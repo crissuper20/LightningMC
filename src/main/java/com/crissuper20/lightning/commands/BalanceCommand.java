@@ -8,6 +8,8 @@ import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
 
+import java.util.concurrent.CompletableFuture;
+
 public class BalanceCommand implements CommandExecutor {
     private final LightningPlugin plugin;
     private final WalletManager walletManager;
@@ -33,14 +35,25 @@ public class BalanceCommand implements CommandExecutor {
         }
 
         String walletId = walletManager.getWalletId(player);
-        LNService.LNResponse<?> response = plugin.getLnService().getWalletBalance(walletId);
+        
+        // Use async API to fetch balance
+        CompletableFuture<LNService.LNResponse<Long>> futureBalance = plugin.getLnService().getBalanceAsync(walletId);
+        
+        // Send a temporary message to inform the player that the balance is being fetched
+        player.sendMessage(LightningPlugin.formatMessage("§7Fetching your balance..."));
 
-        if (response.success) {
-            long balance = (long) response.data;
-            player.sendMessage(LightningPlugin.formatMessage("§7Balance: §f" + balance + " §7sats"));
-        } else {
-            player.sendMessage(LightningPlugin.formatError("Could not fetch balance: " + response.error));
-        }
+        futureBalance.thenAccept(response -> {
+            if (response.success) {
+                long balance = response.data;
+                player.sendMessage(LightningPlugin.formatMessage("§7Balance: §f" + balance + " §7sats"));
+            } else {
+                player.sendMessage(LightningPlugin.formatError("Could not fetch balance: " + response.error));
+            }
+        }).exceptionally(e -> {
+            player.sendMessage(LightningPlugin.formatError("An error occurred while fetching balance."));
+            plugin.getDebugLogger().error("Error fetching balance for " + player.getName(), e);
+            return null;
+        });
 
         return true;
     }

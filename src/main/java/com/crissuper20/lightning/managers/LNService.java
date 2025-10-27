@@ -19,15 +19,23 @@ import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.security.KeyManagementException;
 import java.security.NoSuchAlgorithmException;
-import java.security.SecureRandom;
 import java.security.cert.X509Certificate;
 import java.time.Duration;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class LNService {
     private final LightningPlugin plugin;
     private final HttpClient client;
     private final Gson gson;
+
+    // dedicated executor for blocking HTTP work (prevents using common ForkJoin pool)
+    private final ExecutorService httpExecutor;
+    private final AtomicInteger httpThreadCounter = new AtomicInteger(0);
 
     // Backend type
     private final BackendType backend;
@@ -45,8 +53,43 @@ public class LNService {
     private boolean lndUseHttps;
     private boolean lndSkipTlsVerify;
 
+    // Health monitoring fields
+    private volatile HealthStatus healthStatus = HealthStatus.UNKNOWN;
+    private volatile long lastSuccessTime = 0;
+    private volatile long lastCheckTime = 0;
+    private volatile int consecutiveFailures = 0;
+    private volatile String lastError = null;
+    private final ScheduledExecutorService healthChecker;
+    private static final int MAX_CONSECUTIVE_FAILURES = 3;
+    private static final long HEALTH_CHECK_INTERVAL_MS = 60000; // 1 minute
+
     public enum BackendType {
         LNBITS, LND
+    }
+
+    public enum HealthStatus {
+        HEALTHY, DEGRADED, UNHEALTHY, UNKNOWN
+    }
+
+    // Add this inner class to store health metrics
+    public static class HealthMetrics {
+        public final HealthStatus status;
+        public final long lastSuccessTime;
+        public final long lastCheckTime;
+        public final int consecutiveFailures;
+        public final String lastError;
+        public final long uptimeMs;
+
+        public HealthMetrics(HealthStatus status, long lastSuccessTime, 
+                            long lastCheckTime, int consecutiveFailures,
+                            String lastError, long uptimeMs) {
+            this.status = status;
+            this.lastSuccessTime = lastSuccessTime;
+            this.lastCheckTime = lastCheckTime;
+            this.consecutiveFailures = consecutiveFailures;
+            this.lastError = lastError;
+            this.uptimeMs = uptimeMs;
+        }
     }
 
     public LNService(LightningPlugin plugin) {
@@ -55,21 +98,181 @@ public class LNService {
 
         plugin.getDebugLogger().debug("=== LNService Initialization Started ===");
 
-        // Determine backend type
-        String backendStr = plugin.getConfig().getString("backend", "lnbits").toLowerCase();
-        this.backend = backendStr.equals("lnd") ? BackendType.LND : BackendType.LNBITS;
-        plugin.getDebugLogger().debug("Backend type determined: " + backend);
+        try {
+            // Step 0: determine backend early (used by validation checks)
+            String backendStr = plugin.getConfig().getString("backend", "lnbits").toLowerCase();
+            this.backend = backendStr.equals("lnd") ? BackendType.LND : BackendType.LNBITS;
+            plugin.getDebugLogger().debug("Backend type determined: " + backend);
 
-        // Load configuration
-        plugin.getDebugLogger().debug("Loading configuration...");
-        loadConfig();
+            // create a dedicated executor for blocking HTTP operations
+            int poolSize = Math.max(2, Runtime.getRuntime().availableProcessors());
+            this.httpExecutor = Executors.newFixedThreadPool(poolSize, r -> {
+                Thread t = new Thread(r, "LNService-HTTP-" + httpThreadCounter.incrementAndGet());
+                t.setDaemon(true);
+                return t;
+            });
 
-        // Build HTTP client with appropriate settings
-        plugin.getDebugLogger().debug("Building HTTP client...");
-        this.client = buildHttpClient();
+            // NEW: Prevent running against real-money mainnet instances (EULA compliance).
+            // Check configuration for any "mainnet" setting and abort startup if found.
+            checkMainnetAndAbort();
 
-        plugin.getDebugLogger().debug("=== LNService Initialization Complete ===");
-        plugin.getDebugLogger().info("LNService initialized with backend: " + backend);
+            // Validate configuration BEFORE creating any resources (fail fast)
+            validateConfig();
+
+            // Step 2: Load validated configuration
+            plugin.getDebugLogger().debug("Loading configuration...");
+            loadConfig();
+
+            // Step 3: Build HTTP client with validated settings
+            plugin.getDebugLogger().debug("Building HTTP client...");
+            this.client = buildHttpClient();
+
+            // Initialize health checker
+            this.healthChecker = Executors.newSingleThreadScheduledExecutor(r -> {
+                Thread t = new Thread(r, "LNService-HealthChecker");
+                t.setDaemon(true);
+                return t;
+            });
+
+            // Start periodic health checks
+            healthChecker.scheduleAtFixedRate(
+                this::checkHealth,
+                HEALTH_CHECK_INTERVAL_MS / 2, // Initial delay
+                HEALTH_CHECK_INTERVAL_MS,     // Regular interval
+                TimeUnit.MILLISECONDS
+            );
+
+            plugin.getDebugLogger().debug("=== LNService Initialization Complete ===");
+            plugin.getDebugLogger().info("LNService initialized with backend: " + backend);
+
+        } catch (IllegalStateException e) {
+            plugin.getLogger().severe("Configuration error: " + e.getMessage());
+            plugin.getDebugLogger().error("Failed to initialize LNService", e);
+            // ensure resources cleaned up
+            safeShutdownExecutors();
+            throw e;
+        } catch (Exception e) {
+            plugin.getLogger().severe("Failed to initialize LNService: " + e.getMessage());
+            plugin.getDebugLogger().error("Unexpected error during initialization", e);
+            safeShutdownExecutors();
+            throw new IllegalStateException("Failed to initialize LNService", e);
+        }
+    }
+
+    private void validateConfig() {
+        plugin.saveDefaultConfig();
+
+        // Validate common settings
+        String host = plugin.getConfig().getString(
+            backend == BackendType.LNBITS ? "lnbits.host" : "lnd.host"
+        );
+        if (host == null || host.trim().isEmpty()) {
+            throw new IllegalStateException(
+                "Missing required config: " + 
+                (backend == BackendType.LNBITS ? "lnbits.host" : "lnd.host")
+            );
+        }
+
+        // Validate backend-specific settings
+        if (backend == BackendType.LNBITS) {
+            validateLNbitsConfig();
+        } else {
+            validateLNDConfig();
+        }
+
+        // Validate Tor configuration if .onion address is used
+        validateTorConfig(host);
+
+        plugin.getDebugLogger().debug("Configuration validation successful");
+    }
+
+    private void validateLNbitsConfig() {
+        String apiKey = plugin.getConfig().getString("lnbits.api_key");
+        if (apiKey == null || apiKey.trim().isEmpty()) {
+            throw new IllegalStateException("Missing required config: lnbits.api_key");
+        }
+
+        if (apiKey.length() < 32) {
+            throw new IllegalStateException(
+                "Invalid lnbits.api_key: Key appears too short (expected 32+ characters)"
+            );
+        }
+    }
+
+    private void validateLNDConfig() {
+        int port = plugin.getConfig().getInt("lnd.port", -1);
+        if (port <= 0 || port > 65535) {
+            throw new IllegalStateException(
+                "Invalid lnd.port: Must be between 1 and 65535"
+            );
+        }
+
+        String macaroonHex = plugin.getConfig().getString("lnd.macaroon_hex", "");
+        String macaroonPath = plugin.getConfig().getString("lnd.macaroon_path", "");
+
+        if (macaroonHex.isEmpty() && macaroonPath.isEmpty()) {
+            throw new IllegalStateException(
+                "Missing required config: Either lnd.macaroon_hex or lnd.macaroon_path must be set"
+            );
+        }
+
+        if (!macaroonPath.isEmpty()) {
+            if (!Files.exists(Paths.get(macaroonPath))) {
+                throw new IllegalStateException(
+                    "Invalid lnd.macaroon_path: File does not exist: " + macaroonPath
+                );
+            }
+        }
+    }
+
+    private void validateTorConfig(String host) {
+        if (host != null && host.endsWith(".onion")) {
+            boolean useTorProxy = plugin.getConfig().getBoolean(
+                backend == BackendType.LNBITS ? "lnbits.use_tor_proxy" : "lnd.use_tor_proxy",
+                false
+            );
+            
+            if (!useTorProxy) {
+                throw new IllegalStateException(
+                    "Configuration error: .onion address '" + host + "' requires Tor proxy. " +
+                    "Set " + (backend == BackendType.LNBITS ? "lnbits" : "lnd") + ".use_tor_proxy: true"
+                );
+            }
+
+            boolean useHttps = plugin.getConfig().getBoolean(
+                backend == BackendType.LNBITS ? "lnbits.use_https" : "lnd.use_https",
+                true
+            );
+            boolean skipTls = plugin.getConfig().getBoolean(
+                backend == BackendType.LNBITS ? "lnbits.skip_tls_verify" : "lnd.skip_tls_verify",
+                false
+            );
+
+            if (useHttps && !skipTls) {
+                throw new IllegalStateException(
+                    "Configuration error: .onion address '" + host + "' uses HTTPS with a self-signed cert. " +
+                    "Either set " + (backend == BackendType.LNBITS ? "lnbits" : "lnd") + ".use_https: false OR " +
+                    "set " + (backend == BackendType.LNBITS ? "lnbits" : "lnd") + ".skip_tls_verify: true"
+                );
+            }
+
+            String torHost = plugin.getConfig().getString(
+                backend == BackendType.LNBITS ? "lnbits.tor_proxy_host" : "lnd.tor_proxy_host",
+                ""
+            );
+            int torPort = plugin.getConfig().getInt(
+                backend == BackendType.LNBITS ? "lnbits.tor_proxy_port" : "lnd.tor_proxy_port",
+                -1
+            );
+
+            if (torHost.isEmpty() || torPort <= 0 || torPort > 65535) {
+                throw new IllegalStateException(
+                    "Invalid Tor proxy configuration for .onion address. Check " +
+                    (backend == BackendType.LNBITS ? "lnbits" : "lnd") + 
+                    ".tor_proxy_host and tor_proxy_port settings"
+                );
+            }
+        }
     }
 
     private void loadConfig() {
@@ -160,11 +363,6 @@ public class LNService {
     private HttpClient buildHttpClient() {
         plugin.getDebugLogger().debug("Building HTTP client...");
 
-        // Force use of system native libraries for TLS and proxy handling
-        System.setProperty("jdk.httpclient.allowRestrictedHeaders", "true");
-        System.setProperty("jdk.internal.httpclient.disableHostnameVerification", "true");
-        System.setProperty("jdk.httpclient.enableAllMethodRetry", "true");
-        
         boolean useTor = plugin.getConfig().getBoolean(
             backend == BackendType.LNBITS ? "lnbits.use_tor_proxy" : "lnd.use_tor_proxy",
             false
@@ -172,77 +370,10 @@ public class LNService {
 
         plugin.getDebugLogger().debug("  Tor proxy enabled: " + useTor);
 
-        // Always use native transport
-        HttpClient.Builder builder = HttpClient.newBuilder();
+        HttpClient.Builder builder = HttpClient.newBuilder()
+                .connectTimeout(Duration.ofSeconds(useTor ? 30 : 10));
 
-        if (useTor) {
-            String torHost = plugin.getConfig().getString(
-                backend == BackendType.LNBITS ? "lnbits.tor_proxy_host" : "lnd.tor_proxy_host",
-                "127.0.0.1"
-            );
-            int torPort = plugin.getConfig().getInt(
-                backend == BackendType.LNBITS ? "lnbits.tor_proxy_port" : "lnd.tor_proxy_port",
-                9050
-            );
-
-            plugin.getDebugLogger().debug("  Configuring SOCKS5 proxy: " + torHost + ":" + torPort);
-
-            // System properties for proxy
-            System.setProperty("socksProxyHost", torHost);
-            System.setProperty("socksProxyPort", String.valueOf(torPort));
-            System.setProperty("java.net.useSocksProxy", "true");
-            System.setProperty("jdk.http.auth.tunneling.disabledSchemes", "");
-
-            builder.proxy(ProxySelector.of(new InetSocketAddress(torHost, torPort)));
-        }
-
-        // SSL setup
-        try {
-            SSLContext sslContext = SSLContext.getInstance("TLSv1.3");
-            TrustManager[] trustManagers = new TrustManager[] {
-                new X509TrustManager() {
-                    public X509Certificate[] getAcceptedIssuers() { return null; }
-                    public void checkClientTrusted(X509Certificate[] certs, String authType) { }
-                    public void checkServerTrusted(X509Certificate[] certs, String authType) { }
-                }
-            };
-            sslContext.init(null, trustManagers, new SecureRandom());
-
-            builder.sslContext(sslContext)
-                   .sslParameters(sslContext.getDefaultSSLParameters())
-                   .connectTimeout(Duration.ofSeconds(useTor ? 30 : 10));
-
-            plugin.getDebugLogger().debug("  SSL context configured with native TLS");
-        } catch (Exception e) {
-            plugin.getLogger().severe("Failed to configure SSL context: " + e.getMessage());
-            plugin.getDebugLogger().error("SSL setup error", e);
-        }
-
-        // Configure SSL context and trust settings
-        boolean wantSkipTls = (backend == BackendType.LND && lndSkipTlsVerify) || 
-                             (backend == BackendType.LNBITS && lnbitsSkipTlsVerify);
-                             
-        if (wantSkipTls) {
-            plugin.getDebugLogger().debug("  Configuring SSL context to trust all certificates...");
-            try {
-                SSLContext sslContext = SSLContext.getInstance("TLS");
-                sslContext.init(null, trustAllCerts, new java.security.SecureRandom());
-                
-                // Configure the builder with our all-trusting SSL context
-                builder.sslContext(sslContext)
-                       .sslParameters(sslContext.getDefaultSSLParameters());
-                
-                // Also set default hostname verifier to trust all (belt and suspenders)
-                HttpsURLConnection.setDefaultHostnameVerifier((hostname, session) -> true);
-                
-                plugin.getDebugLogger().debug("  SSL context configured (trusting all certificates)");
-            } catch (NoSuchAlgorithmException | KeyManagementException e) {
-                plugin.getLogger().warning("Failed to setup SSL context");
-                plugin.getDebugLogger().error("SSL context error: " + e.getMessage(), e);
-            }
-        }
-
-        // Add proxy if enabled (critical for .onion addresses)
+        // Configure Tor proxy if enabled (critical for .onion addresses)
         if (useTor) {
             String torHost = plugin.getConfig().getString(
                 backend == BackendType.LNBITS ? "lnbits.tor_proxy_host" : "lnd.tor_proxy_host", 
@@ -282,21 +413,29 @@ public class LNService {
             }
         }
 
-        // Optionally disable SSL verification for backends when configured to skip TLS verification
-        boolean needSkipTls = (backend == BackendType.LND && lndUseHttps && lndSkipTlsVerify)
-                || (backend == BackendType.LNBITS && lnbitsUseHttps && lnbitsSkipTlsVerify);
-
-        if (needSkipTls) {
-            plugin.getDebugLogger().debug("  Configuring SSL context to skip TLS verification (trust all certs)...");
+        // Configure SSL context - only trust all certs when skip_tls_verify is explicitly true
+        boolean skipTlsVerify = (backend == BackendType.LND && lndSkipTlsVerify) || 
+                                (backend == BackendType.LNBITS && lnbitsSkipTlsVerify);
+                             
+        if (skipTlsVerify) {
+            plugin.getDebugLogger().debug("  Configuring SSL context to trust all certificates...");
             try {
                 SSLContext sslContext = SSLContext.getInstance("TLS");
                 sslContext.init(null, trustAllCerts, new java.security.SecureRandom());
-                builder.sslContext(sslContext);
+                
+                builder.sslContext(sslContext)
+                       .sslParameters(sslContext.getDefaultSSLParameters());
+                
+                // Also set default hostname verifier to trust all
+                HttpsURLConnection.setDefaultHostnameVerifier((hostname, session) -> true);
+                
                 plugin.getDebugLogger().debug("  SSL context configured (trusting all certificates)");
             } catch (NoSuchAlgorithmException | KeyManagementException e) {
                 plugin.getLogger().warning("Failed to setup SSL context");
                 plugin.getDebugLogger().error("SSL context error: " + e.getMessage(), e);
             }
+        } else {
+            plugin.getDebugLogger().debug("  Using default SSL context with standard certificate verification");
         }
 
         plugin.getDebugLogger().debug("HTTP client built successfully");
@@ -430,21 +569,18 @@ public class LNService {
                 logNetworkError(e, url + " (unexpected error after " + duration + "ms)", headerExample);
                 return LNResponse.failure("Unexpected error: " + e.getMessage(), -1);
             }
-        });
+        }, httpExecutor);
     }
 
-    public LNResponse<JsonObject> getWalletInfo() {
-        return getWalletInfoAsync().join();
-    }
+    /** Get balance (unified for both backends) 
+     * @param walletId */
+    public CompletableFuture<LNResponse<Long>> getBalanceAsync(String walletId) {
+        plugin.getDebugLogger().debug("=== getBalance Request ===");
 
-    /** Get balance (unified for both backends) */
-    public CompletableFuture<LNResponse<Long>> getBalanceAsync() {
-        return CompletableFuture.supplyAsync(() -> {
-            plugin.getDebugLogger().debug("=== getBalance Request ===");
-            
-            if (backend == BackendType.LNBITS) {
-                plugin.getDebugLogger().debug("Using LNbits wallet endpoint for balance");
-                LNResponse<JsonObject> walletInfo = getWalletInfo();
+        if (backend == BackendType.LNBITS) {
+            plugin.getDebugLogger().debug("Using LNbits wallet endpoint for balance");
+            // Compose on existing async method to avoid blocking
+            return getWalletInfoAsync().thenApply(walletInfo -> {
                 if (walletInfo.success) {
                     long balanceMsat = walletInfo.data.get("balance").getAsLong();
                     long balance = balanceMsat / 1000; // msat to sat
@@ -453,8 +589,10 @@ public class LNService {
                 }
                 plugin.getDebugLogger().debug("Failed to get balance: " + walletInfo.error);
                 return LNResponse.failure(walletInfo.error, walletInfo.statusCode);
-            } else {
-                // LND balance endpoint
+            });
+        } else {
+            // LND balance endpoint (keeps logic but runs in dedicated executor)
+            return CompletableFuture.supplyAsync(() -> {
                 String url = baseUrl() + "/balance/channels";
                 plugin.getDebugLogger().debug("URL: " + url);
                 
@@ -493,8 +631,8 @@ public class LNService {
                     Thread.currentThread().interrupt();
                     return LNResponse.failure("Request interrupted", -1);
                 }
-            }
-        });
+            }, httpExecutor);
+        }
     }
 
     /** Create invoice (works for both backends) */
@@ -554,11 +692,32 @@ public class LNService {
                     
                     String paymentHash, bolt11;
                     if (backend == BackendType.LNBITS) {
-                        paymentHash = json.get("payment_hash").getAsString();
-                        bolt11 = json.get("payment_request").getAsString();
+                        // LNbits returns: payment_hash, payment_request (or bolt11)
+                        if (json.has("payment_hash")) {
+                            paymentHash = json.get("payment_hash").getAsString();
+                        } else {
+                            plugin.getDebugLogger().error("LNbits response missing payment_hash. Response: " + response.body());
+                            return LNResponse.failure("Invalid response from LNbits: missing payment_hash", response.statusCode());
+                        }
+                        
+                        // Try both field names for the invoice
+                        if (json.has("payment_request")) {
+                            bolt11 = json.get("payment_request").getAsString();
+                        } else if (json.has("bolt11")) {
+                            bolt11 = json.get("bolt11").getAsString();
+                        } else {
+                            plugin.getDebugLogger().error("LNbits response missing payment_request/bolt11. Response: " + response.body());
+                            return LNResponse.failure("Invalid response from LNbits: missing payment_request/bolt11", response.statusCode());
+                        }
                     } else {
-                        paymentHash = json.get("r_hash").getAsString();
-                        bolt11 = json.get("payment_request").getAsString();
+                        // LND returns: r_hash, payment_request
+                        if (json.has("r_hash") && json.has("payment_request")) {
+                            paymentHash = json.get("r_hash").getAsString();
+                            bolt11 = json.get("payment_request").getAsString();
+                        } else {
+                            plugin.getDebugLogger().error("LND response missing required fields. Response: " + response.body());
+                            return LNResponse.failure("Invalid response from LND: missing r_hash or payment_request", response.statusCode());
+                        }
                     }
                     
                     plugin.getDebugLogger().debug("Invoice created successfully");
@@ -592,42 +751,7 @@ public class LNService {
                 logNetworkError(e, url + " (unexpected)", headerExample);
                 return LNResponse.failure("Unexpected error: " + e.getMessage(), -1);
             }
-        });
-    }
-
-    public LNResponse<Invoice> createInvoice(long amountSats, String memo) {
-        return createInvoiceAsync(amountSats, memo).join();
-    }
-
-    public LNResponse<Long> getWalletBalance(String walletId) {
-        if (backend != BackendType.LNBITS) {
-            // For LND, we just use the main wallet balance
-            return getBalanceAsync().join();
-        }
-
-        String url = baseUrl() + "/wallet";
-        plugin.getDebugLogger().debug("Fetching balance for wallet: " + walletId);
-            
-        HttpRequest.Builder requestBuilder = HttpRequest.newBuilder()
-            .uri(URI.create(url))
-            .timeout(Duration.ofSeconds(30))
-            .header("X-Api-Key", walletId) // Use wallet-specific API key
-            .GET();
-
-        try {
-            HttpResponse<String> response = client.send(requestBuilder.build(), HttpResponse.BodyHandlers.ofString());
-            
-            if (response.statusCode() == 200) {
-                JsonObject data = gson.fromJson(response.body(), JsonObject.class);
-                long balanceMsat = data.get("balance").getAsLong();
-                long balance = balanceMsat / 1000; // Convert msat to sat
-                return LNResponse.success(balance, response.statusCode());
-            }
-            return LNResponse.failure("Failed to fetch balance: HTTP " + response.statusCode(), response.statusCode());
-        } catch (Exception e) {
-            plugin.getDebugLogger().error("Error fetching balance for wallet " + walletId, e);
-            return LNResponse.failure("Failed to fetch balance: " + e.getMessage(), -1);
-        }
+        }, httpExecutor);
     }
 
     /** Check if invoice is paid (works for both backends) */
@@ -691,11 +815,7 @@ public class LNService {
                 Thread.currentThread().interrupt();
                 return LNResponse.failure("Request interrupted", -1);
             }
-        });
-    }
-
-    public LNResponse<Boolean> checkInvoice(String paymentHash) {
-        return checkInvoiceAsync(paymentHash).join();
+        }, httpExecutor);
     }
 
     /** Pay an invoice (works for both backends) */
@@ -766,11 +886,46 @@ public class LNService {
                 Thread.currentThread().interrupt();
                 return LNResponse.failure("Request interrupted", -1);
             }
-        });
+        }, httpExecutor);
     }
 
     public void shutdown() {
         plugin.getDebugLogger().debug("Shutting down LNService...");
+        
+        try {
+            healthChecker.shutdown();
+            if (!healthChecker.awaitTermination(5, TimeUnit.SECONDS)) {
+                healthChecker.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            healthChecker.shutdownNow();
+        }
+
+        // shutdown http executor used for blocking HTTP calls
+        try {
+            httpExecutor.shutdown();
+            if (!httpExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
+                httpExecutor.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            httpExecutor.shutdownNow();
+        }
+    }
+
+    // helper to clean up executors on failed init
+    private void safeShutdownExecutors() {
+        try {
+            if (healthChecker != null) {
+                healthChecker.shutdownNow();
+            }
+        } catch (Throwable ignored) { }
+        try {
+            if (httpExecutor != null) {
+                httpExecutor.shutdownNow();
+            }
+        } catch (Throwable ignored) { }
     }
 
     /**
@@ -816,14 +971,149 @@ public class LNService {
 
     // Invoice data class
     public static class Invoice {
-        public final String paymentHash;
-        public final String bolt11;
-        public final long amountSats;
+        private String paymentHash;
+        private String bolt11;
+        private long amount;
+        private String memo;
 
-        public Invoice(String paymentHash, String bolt11, long amountSats) {
+        // Constructor used in createInvoiceAsync
+        public Invoice(String paymentHash, String bolt11, long amount) {
             this.paymentHash = paymentHash;
             this.bolt11 = bolt11;
-            this.amountSats = amountSats;
+            this.amount = amount;
+        }
+
+        // Getter for bolt11
+        public String getBolt11() {
+            return bolt11;
+        }
+
+        // Getter for other fields
+        public String getPaymentHash() {
+            return paymentHash;
+        }
+
+        public long getAmount() {
+            return amount;
+        }
+
+        public String getMemo() {
+            return memo;
         }
     }
+
+    // Health check methods
+    private void checkHealth() {
+        plugin.getDebugLogger().debug("Performing health check...");
+        lastCheckTime = System.currentTimeMillis();
+
+        try {
+            // Use getWalletInfo as health check
+            CompletableFuture<LNResponse<JsonObject>> future = getWalletInfoAsync();
+            LNResponse<JsonObject> response = future.get(30, TimeUnit.SECONDS);
+
+            if (response.success) {
+                handleHealthCheckSuccess();
+            } else {
+                handleHealthCheckFailure("Backend error: " + response.error);
+            }
+        } catch (Exception e) {
+            handleHealthCheckFailure("Health check failed: " + e.getMessage());
+        }
+    }
+
+    private void handleHealthCheckSuccess() {
+        lastSuccessTime = System.currentTimeMillis();
+        consecutiveFailures = 0;
+        lastError = null;
+        
+        healthStatus = HealthStatus.HEALTHY;
+        plugin.getDebugLogger().debug("Health check successful");
+    }
+
+    private void handleHealthCheckFailure(String error) {
+        consecutiveFailures++;
+        lastError = error;
+        
+        if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+            healthStatus = HealthStatus.UNHEALTHY;
+            plugin.getLogger().warning("Backend declared unhealthy after " + 
+                consecutiveFailures + " consecutive failures");
+        } else if (consecutiveFailures > 1) {
+            healthStatus = HealthStatus.DEGRADED;
+            plugin.getLogger().warning("Backend showing signs of degradation (" + 
+                consecutiveFailures + " failures)");
+        }
+        
+        plugin.getDebugLogger().error("Health check failed: " + error);
+    }
+
+    public HealthMetrics getHealthMetrics() {
+        return new HealthMetrics(
+            healthStatus,
+            lastSuccessTime,
+            lastCheckTime,
+            consecutiveFailures,
+            lastError,
+            lastSuccessTime > 0 ? System.currentTimeMillis() - lastSuccessTime : 0
+        );
+    }
+
+    // Fix isHealthy() method to consider all health states
+    public boolean isHealthy() {
+        switch (healthStatus) {
+            case HEALTHY:
+                return true;
+            case DEGRADED:
+                // Allow degraded state but log a warning
+                plugin.getDebugLogger().debug("Service is in degraded state (" + 
+                    consecutiveFailures + " recent failures)");
+                return true;
+            case UNHEALTHY:
+                return false;
+            case UNKNOWN:
+            default:
+                // Treat unknown status as unhealthy after startup grace period
+                long uptime = System.currentTimeMillis() - lastCheckTime;
+                boolean isStarting = uptime < HEALTH_CHECK_INTERVAL_MS * 2;
+                if (!isStarting) {
+                    plugin.getDebugLogger().warning("Service health status is UNKNOWN");
+                }
+                return isStarting;
+        }
+    }
+
+    private void checkMainnetAndAbort() {
+        try {
+            String globalNet = plugin.getConfig().getString("network", "").trim();
+            String backendNetKey = (backend == BackendType.LNBITS) ? "lnbits.network" : "lnd.network";
+            String backendNet = plugin.getConfig().getString(backendNetKey, "").trim();
+
+            boolean globalMain = "mainnet".equalsIgnoreCase(globalNet);
+            boolean backendMain = "mainnet".equalsIgnoreCase(backendNet);
+
+            if (globalMain || backendMain) {
+                String msg = "Sorry, to avoid your server getting banned, mainnet use is not allowed, use testnet pls";
+                plugin.getLogger().severe(msg);
+                plugin.getDebugLogger().error(msg);
+
+                // Try to disable plugin gracefully if running under a Bukkit/Spigot-like environment
+                try {
+                    plugin.getServer().getPluginManager().disablePlugin(plugin);
+                } catch (Throwable t) {
+                    // If we cannot programmatically disable, log debug and continue to fail fast
+                    plugin.getDebugLogger().error("Failed to disable plugin programmatically", t);
+                }
+
+                throw new IllegalStateException(msg);
+            }
+        } catch (Exception e) {
+            // Any unexpected error during the check should abort initialization to be safe
+            String err = "Failed while checking network type for mainnet safety: " + e.getMessage();
+            plugin.getLogger().severe(err);
+            plugin.getDebugLogger().error(err, e);
+            throw new IllegalStateException(err, e);
+        }
+    }
+
 }

@@ -1,14 +1,14 @@
-import com.github.spotbugs.snom.SpotBugsTask
+//import com.github.spotbugs.snom.SpotBugsTask
 import java.text.SimpleDateFormat
 
 plugins {
-    id 'checkstyle'
-    id "com.github.spotbugs" version "6.4.2"
+//    id 'checkstyle'
+// id "com.github.spotbugs" version "6.4.2"
     id 'com.gradleup.shadow' version '9.2.2'
     id 'java'
 }
 
-group = "com.crimsonwarpedcraft.exampleplugin"
+group = "com.crissuper20.lightning"
 
 static def getTime() {
     SimpleDateFormat sdf = new SimpleDateFormat("yyMMdd-HHmm")
@@ -42,6 +42,7 @@ java {
 }
 
 repositories {
+    mavenCentral()
     maven {
         name = 'papermc'
         url = 'https://repo.papermc.io/repository/maven-public/'
@@ -66,13 +67,12 @@ repositories {
 
 dependencies {
     compileOnly 'io.papermc.paper:paper-api:1.21.10-R0.1-SNAPSHOT'
-    compileOnly 'com.github.spotbugs:spotbugs-annotations:4.9.6'
     implementation 'io.papermc:paperlib:1.0.8'
-    spotbugsPlugins 'com.h3xstream.findsecbugs:findsecbugs-plugin:1.14.0'
-    testCompileOnly 'com.github.spotbugs:spotbugs-annotations:4.9.6'
     testImplementation 'io.papermc.paper:paper-api:1.21.10-R0.1-SNAPSHOT'
     testImplementation 'org.junit.jupiter:junit-jupiter:6.0.0'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher:6.0.0'
+    implementation 'com.google.zxing:core:3.5.3'
+    implementation 'com.google.zxing:javase:3.5.3'
 }
 
 test {
@@ -82,33 +82,6 @@ test {
 processResources {
     filesMatching("**/plugin.yml") {
         expand ( NAME: rootProject.name, VERSION: version, PACKAGE: rootProject.group.toString() )
-    }
-}
-
-checkstyle {
-    toolVersion = '12.0.1'
-    maxWarnings = 0
-}
-
-configurations.checkstyle {
-    resolutionStrategy.capabilitiesResolution.withCapability("com.google.collections:google-collections") {
-        select("com.google.guava:guava:23.0")
-    }
-}
-
-tasks.withType(Checkstyle).configureEach {
-    reports {
-        xml.required = false
-        html.required = true
-    }
-}
-
-tasks.withType(SpotBugsTask).configureEach {
-    reports.create("html") {
-        required = true
-    }
-    reports.create("xml") {
-        required = false
     }
 }
 
@@ -140,3 +113,4 @@ tasks.register('release') {
         }
     }
 }
+
