@@ -130,11 +130,7 @@ xxd -ps -u -c 1000 ~/.lnd/data/chain/bitcoin/testnet/admin.macaroon
 
 Copy the output and paste it into the `macaroon_hex` field.
 
-### Testnet Resources
-
-#### Get Testnet Bitcoin
-- [Coinfaucet.eu Testnet Faucet](https://coinfaucet.eu/en/btc-testnet/)
-- [Mempool.space Testnet Faucet](https://testnet-faucet.mempool.co/)
+### Resources
 
 #### LNbits Instances
 - [Legend.lnbits.com](https://demo.lnbits.com) - Public testnet instance
@@ -226,7 +222,7 @@ permissions:
 ### Build Steps
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/LightningMC.git
+git clone https://github.com/crissuper20/LightningMC.git
 cd LightningMC
 
 # Build with the included gradle script
