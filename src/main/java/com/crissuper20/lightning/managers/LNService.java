@@ -1,4 +1,4 @@
-package com.crissuper20.lightning.managers;
+/**package com.crissuper20.lightning.managers;
 
 import com.crissuper20.lightning.LightningPlugin;
 import com.google.gson.Gson;
@@ -212,7 +212,7 @@ public class LNService {
 
         if (macaroonHex.isEmpty() && macaroonPath.isEmpty()) {
             throw new IllegalStateException(
-                "Missing required config: Either lnd.macaroon_hex or lnd.macaroon_path must be set"
+   s             "Missing required config: Either lnd.macaroon_hex or lnd.macaroon_path must be set"
             );
         }
 
@@ -484,7 +484,7 @@ public class LNService {
         }
     }
 
-    /** Get wallet/node info (works for both backends) */
+     Get wallet/node info (works for both backends) 
     public CompletableFuture<LNResponse<JsonObject>> getWalletInfoAsync() {
         return CompletableFuture.supplyAsync(() -> {
             String url = backend == BackendType.LNBITS ? 
@@ -572,8 +572,7 @@ public class LNService {
         }, httpExecutor);
     }
 
-    /** Get balance (unified for both backends) 
-     * @param walletId */
+     Get balance (unified for both backends)  @param walletId 
     public CompletableFuture<LNResponse<Long>> getBalanceAsync(String walletId) {
         plugin.getDebugLogger().debug("=== getBalance Request ===");
 
@@ -635,7 +634,7 @@ public class LNService {
         }
     }
 
-    /** Create invoice (works for both backends) */
+    Create invoice (works for both backends) 
     public CompletableFuture<LNResponse<Invoice>> createInvoiceAsync(long amountSats, String memo) {
         return CompletableFuture.supplyAsync(() -> {
             plugin.getDebugLogger().debug("=== createInvoice Request ===");
@@ -754,7 +753,7 @@ public class LNService {
         }, httpExecutor);
     }
 
-    /** Check if invoice is paid (works for both backends) */
+     Check if invoice is paid (works for both backends) 
     public CompletableFuture<LNResponse<Boolean>> checkInvoiceAsync(String paymentHash) {
         return CompletableFuture.supplyAsync(() -> {
             plugin.getDebugLogger().debug("=== checkInvoice Request ===");
@@ -818,7 +817,7 @@ public class LNService {
         }, httpExecutor);
     }
 
-    /** Pay an invoice (works for both backends) */
+    /** Pay an invoice (works for both backends) 
     public CompletableFuture<LNResponse<JsonObject>> payInvoiceAsync(String bolt11) {
         return CompletableFuture.supplyAsync(() -> {
             plugin.getDebugLogger().debug("=== payInvoice Request ===");
@@ -928,10 +927,10 @@ public class LNService {
         } catch (Throwable ignored) { }
     }
 
-    /**
-     * Improved network error logging helper — logs exception class, message, stacktrace,
-     * and prints a small curl example (with masked auth) to aid debugging from the server.
-     */
+    
+      Improved network error logging helper — logs exception class, message, stacktrace,
+      and prints a small curl example (with masked auth) to aid debugging from the server.
+     
     private void logNetworkError(Exception e, String url, String authHeaderExample) {
         String exClass = (e == null) ? "UnknownException" : e.getClass().getSimpleName();
         String exMsg = (e == null || e.getMessage() == null) ? "" : e.getMessage();
@@ -1117,3 +1116,4 @@ public class LNService {
     }
 
 }
+**/
