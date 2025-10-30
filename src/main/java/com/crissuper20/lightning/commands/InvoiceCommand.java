@@ -1,8 +1,8 @@
 package com.crissuper20.lightning.commands;
 
 import com.crissuper20.lightning.LightningPlugin;
-import com.crissuper20.lightning.managers.LNService;
-import com.crissuper20.lightning.managers.LNService.Invoice;
+import com.crissuper20.lightning.clients.LNClient;
+import com.crissuper20.lightning.clients.LNClient.Invoice;
 import com.crissuper20.lightning.util.QRMapGenerator;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
@@ -13,15 +13,6 @@ import org.bukkit.inventory.ItemStack;
 import java.util.Arrays;
 import java.util.concurrent.CompletableFuture;
 
-/**
- * /invoice command - creates a Lightning invoice and gives the player a QR code map.
- * 
- * Uses QRMapGenerator as the primary API, which intelligently tries:
- * 1. QRMapRenderer.createMapForPlayer (direct Bukkit map creation)
- * 2. QRMap.giveMap (reflection-based shim for embedded qrmap/ sources)
- * 
- * This provides maximum flexibility and backward compatibility.
- */
 public class InvoiceCommand implements CommandExecutor {
     private final LightningPlugin plugin;
 
@@ -32,7 +23,7 @@ public class InvoiceCommand implements CommandExecutor {
     @Override
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
         // DEBUG: Log that command was triggered
-        plugin.getDebugLogger().debug("=== /invoice command triggered ===");
+        plugin.getDebugLogger().debug("/invoice command triggered");
         plugin.getDebugLogger().debug("Sender: " + sender.getName());
         plugin.getDebugLogger().debug("Label: " + label);
         plugin.getDebugLogger().debug("Args length: " + args.length);
@@ -78,13 +69,13 @@ public class InvoiceCommand implements CommandExecutor {
         String memo = String.join(" ", Arrays.copyOfRange(args, 1, args.length));
 
         // Create invoice asynchronously
-        CompletableFuture<LNService.LNResponse<Invoice>> futureInvoice = 
+        CompletableFuture<LNClient.LNResponse<Invoice>> futureInvoice = 
             plugin.getLnService().createInvoiceAsync(amount, memo);
 
         player.sendMessage(LightningPlugin.formatMessage("§7Creating invoice..."));
 
         futureInvoice.thenAccept(response -> {
-            // All Bukkit interactions must run on the main server thread
+            // All Bukkit interactions must run on the main server thread guh
             plugin.getServer().getScheduler().runTask(plugin, () -> {
                 if (response.success) {
                     Invoice invoice = response.data;

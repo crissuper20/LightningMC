@@ -1,7 +1,7 @@
 package com.crissuper20.lightning.commands;
 
 import com.crissuper20.lightning.LightningPlugin;
-import com.crissuper20.lightning.managers.LNService;
+import com.crissuper20.lightning.clients.LNClient;
 import com.crissuper20.lightning.managers.WalletManager;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
@@ -37,9 +37,9 @@ public class BalanceCommand implements CommandExecutor {
         String walletId = walletManager.getWalletId(player);
         
         // Use async API to fetch balance
-        CompletableFuture<LNService.LNResponse<Long>> futureBalance = plugin.getLnService().getBalanceAsync(walletId);
+        CompletableFuture<LNClient.LNResponse<Long>> futureBalance = plugin.getLnService().getBalanceAsync(walletId);
         
-        // Send a temporary message to inform the player that the balance is being fetched
+        // Send a temporary message
         player.sendMessage(LightningPlugin.formatMessage("§7Fetching your balance..."));
 
         futureBalance.thenAccept(response -> {

@@ -1,12 +1,16 @@
 package com.crissuper20.lightning;
 
 import com.crissuper20.lightning.util.DebugLogger;
+import com.crissuper20.lightning.managers.InvoiceMonitor;
 import com.crissuper20.lightning.managers.LNService;
 import com.crissuper20.lightning.managers.WalletManager;
 import com.crissuper20.lightning.commands.BalanceCommand;
 import com.crissuper20.lightning.commands.WalletCommand;
 import com.crissuper20.lightning.commands.InvoiceCommand;
+import com.crissuper20.lightning.commands.PayCommand;
+import com.crissuper20.lightning.clients.LNClient;
 import org.bukkit.plugin.java.JavaPlugin;
+
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeoutException;
@@ -17,6 +21,7 @@ public class LightningPlugin extends JavaPlugin {
     private DebugLogger debugLogger;
     private LNService lnService;
     private WalletManager walletManager;
+    private InvoiceMonitor invoiceMonitor;
 
     @Override
     public void onEnable() {
@@ -44,11 +49,11 @@ public class LightningPlugin extends JavaPlugin {
             return;
         }
 
-        // Initialize Lightning service (handles both LNbits and LND)
+        // Initialize Lightning service (factory creates appropriate client)
         try {
             lnService = new LNService(this);
             debugLogger.info("LNService initialized successfully");
-            debugLogger.info("Backend: " + lnService.getBackend());
+            debugLogger.info("Backend: " + lnService.getBackendName());
             
             // Initialize wallet manager
             walletManager = new WalletManager(this);
@@ -77,7 +82,13 @@ public class LightningPlugin extends JavaPlugin {
             }
             getLogger().warning("==============================================");
         }
-
+        try {
+        invoiceMonitor = new InvoiceMonitor(this);
+        debugLogger.info("InvoiceMonitor initialized successfully");
+        } catch (Exception e) {
+        getLogger().severe("Failed to initialize InvoiceMonitor: " + e.getMessage());
+        e.printStackTrace();
+        }
         // Register commands
         registerCommands();
 
@@ -99,7 +110,14 @@ public class LightningPlugin extends JavaPlugin {
                 getLogger().warning("Error during LNService shutdown: " + e.getMessage());
             }
         }
-        
+         if (invoiceMonitor != null) {
+        try {
+            invoiceMonitor.shutdown();
+            debugLogger.info("InvoiceMonitor shutdown cleanly");
+        } catch (Exception e) {
+            getLogger().warning("Error during InvoiceMonitor shutdown: " + e.getMessage());
+        }
+        }
         debugLogger.info("Lightning Plugin disabled.");
     }
 
@@ -111,8 +129,11 @@ public class LightningPlugin extends JavaPlugin {
 
         if (backend.equals("lnd")) {
             return validateLNDConfig();
-        } else {
+        } else if (backend.equals("lnbits")) {
             return validateLNbitsConfig();
+        } else {
+            getLogger().severe("Invalid backend: " + backend + ". Must be 'lnbits' or 'lnd'");
+            return false;
         }
     }
 
@@ -172,11 +193,11 @@ public class LightningPlugin extends JavaPlugin {
         
         try {
             // Use async API with a short timeout to avoid hanging startup indefinitely.
-            LNService.LNResponse<?> response = lnService.getWalletInfoAsync()
+            LNClient.LNResponse<?> response = lnService.getWalletInfoAsync()
                     .get(5, TimeUnit.SECONDS);
 
             if (response.success) {
-                debugLogger.info("Successfully connected to backend!");
+                debugLogger.info("Successfully connected to " + lnService.getBackendName() + "!");
                 return true;
             } else {
                 getLogger().warning("Connection test failed: " + response.error);
@@ -204,6 +225,12 @@ public class LightningPlugin extends JavaPlugin {
 
     private void registerCommands() {
         try {
+            if (getCommand("pay") != null) {
+            getCommand("pay").setExecutor(new PayCommand(this));
+            debugLogger.info("Registered /pay command");
+        } else {
+            getLogger().warning("Could not register /pay - command not found in plugin.yml");
+        }
             if (getCommand("balance") != null) {
                 getCommand("balance").setExecutor(new BalanceCommand(this));
                 debugLogger.info("Registered /balance command");
@@ -224,7 +251,7 @@ public class LightningPlugin extends JavaPlugin {
             } else {
                 getLogger().warning("Could not register /invoice - command not found in plugin.yml");
             }
-            
+
             // Add more commands later: /pay, etc.
         } catch (Exception e) {
             getLogger().severe("Error registering commands: " + e.getMessage());
@@ -253,6 +280,9 @@ public class LightningPlugin extends JavaPlugin {
     public WalletManager getWalletManager() {
         return walletManager;
     }
+     public InvoiceMonitor getInvoiceMonitor() {
+    return invoiceMonitor;
+  }
 
     /**
      * Sends a formatted message to a player/console
@@ -268,4 +298,5 @@ public class LightningPlugin extends JavaPlugin {
     public static String formatSuccess(String message) {
         return message;
     }
+    
 }

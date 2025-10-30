@@ -1,7 +1,7 @@
 main: com.crissuper20.lightning.LightningPlugin
 name: ${NAME}
 version: "${VERSION}"
-api-version: "1.21.4"
+api-version: "1.16"
 author: crissuper20
 description: lnbits on minecraft
 commands:
@@ -10,8 +10,8 @@ commands:
     usage: /<command>
     permission: lightning.balance
   pay:
-    description: Pay another player over Lightning (stub)
-    usage: /<command> <player> <amount>
+    description: Pay another player over Lightning 
+    usage: /<command> <bolt11>
     permission: lightning.pay
   invoice:
     description: Create an invoice (stub)
