@@ -12,12 +12,13 @@ import java.nio.file.Paths;
 import java.util.concurrent.CompletableFuture;
 
 /**
- * Lightning Network Service Manager - Player-Aware Version 
+ * Lightning Network Service Manager - Player-Aware Version (Refactored)
  *
  * This version:
  *  - Uses new LNbitsClient async methods (xxxAsync(..., key))
  *  - Provides per-player LNbits wallet support via WalletManager
- *  - Validates config and prevents mainnet usage 
+ *  - Validates config and prevents mainnet usage
+ *  - This plugin now is big enough that AIs hallucinate on debugging ;p 
  */
 public class LNService {
 
@@ -118,7 +119,7 @@ public class LNService {
 
         boolean isMainnet = "mainnet".equalsIgnoreCase(globalNet) || "mainnet".equalsIgnoreCase(backendNet);
         if (isMainnet) {
-            String msg = "no you cant use mainnet sorry";
+            String msg = "MAINNET USE BLOCKED: plugin not allowed on mainnet (EULA compliance)";
             plugin.getLogger().severe("=".repeat(60));
             plugin.getLogger().severe(msg);
             plugin.getLogger().severe("=".repeat(60));
@@ -142,7 +143,7 @@ public class LNService {
         if (walletManager == null)
             throw new IllegalStateException("WalletManager not initialized");
 
-        String key = walletManager.getAdminKey(player);
+        String key = walletManager.getPlayerAdminKey(player);
         if (key == null)
             return CompletableFuture.completedFuture(LNClient.LNResponse.failure("Player has no wallet", 400));
 
@@ -159,7 +160,7 @@ public class LNService {
         if (walletManager == null)
             throw new IllegalStateException("WalletManager not initialized");
 
-        String key = walletManager.getAdminKey(player);
+        String key = walletManager.getPlayerAdminKey(player);
         if (key == null)
             return CompletableFuture.completedFuture(LNClient.LNResponse.failure("Player has no wallet", 400));
 
@@ -182,7 +183,7 @@ public class LNService {
         if (walletManager == null)
             throw new IllegalStateException("WalletManager not initialized");
 
-        String key = walletManager.getAdminKey(player);
+        String key = walletManager.getPlayerAdminKey(player);
         if (key == null)
             return CompletableFuture.completedFuture(LNClient.LNResponse.failure("Player has no wallet", 400));
 
@@ -199,7 +200,7 @@ public class LNService {
         if (walletManager == null)
             throw new IllegalStateException("WalletManager not initialized");
 
-        String key = walletManager.getAdminKey(player);
+        String key = walletManager.getPlayerAdminKey(player);
         if (key == null)
             return CompletableFuture.completedFuture(LNClient.LNResponse.failure("Player has no wallet", 400));
 
