@@ -80,10 +80,14 @@ public class InvoiceCommand implements CommandExecutor {
                 if (response.success) {
                     Invoice invoice = response.data;
                     String paymentRequest = invoice.getBolt11();
+                    String paymentHash = invoice.getPaymentHash();
                     
                     player.sendMessage(LightningPlugin.formatMessage("§aInvoice created successfully!"));
                     plugin.getDebugLogger().debug("Invoice created for " + player.getName() + 
-                        ": " + amount + " sats, hash=" + invoice.getPaymentHash());
+                        ": " + amount + " sats, hash=" + paymentHash);
+
+                    // ⭐ REGISTER INVOICE WITH MONITOR - THIS WAS MISSING!
+                    plugin.getInvoiceMonitor().trackInvoice(player, paymentHash, amount, memo);
 
                     // Always show the invoice text in chat
                     player.sendMessage(LightningPlugin.formatMessage("§7Invoice: §f" + paymentRequest));

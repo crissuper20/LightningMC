@@ -1,81 +1,121 @@
+# ==========================================
+# Lightning Network Minecraft Plugin
+# TESTNET ONLY - Real Bitcoin Learning Tool
+# ==========================================
 
 # Enable debug logging (verbose output)
 debug: false
+
+# Network Type (testnet/signet ONLY - mainnet is blocked)
+# This is checked on startup to ensure EULA compliance
+network: "testnet"
 
 # Lightning Backend Selection
 # Choose: "lnbits" or "lnd"
 backend: "lnbits"
 
-# LNbits Configuration (if backend: lnbits)
+# ==========================================
+# LNbits Configuration (Recommended)
+# ==========================================
+# With LNbits, each player gets their own Lightning wallet!
+# You need an ADMIN API key to create wallets.
+
 lnbits:
   # LNbits instance hostname (without https://)
   # MUST be a testnet/signet instance
-  # Example: "testnet.lnbits.com" or "localhost:5000"
-  # For Tor: "yournode.onion" (no port needed, uses standard 80/443)
+  # Examples:
+  #   - "demo.lnbits.com" (public testnet)
+  #   - "localhost:5000" (self-hosted)
+  #   - "yournode.onion" (Tor hidden service)
   host: "demo.lnbits.com"
-  
+
   # Use HTTPS connection (recommended for remote servers)
-  # Set to false for .onion addresses (Tor doesn't use HTTPS prefix)
+  # Set to false for local/development or .onion with HTTP
   use_https: true
-  
-  # Wallet ID (optional, but recommended for organization)
-  wallet_id: ""
-  
-  # API Key (Invoice/Read key or Admin key)
-  # Get this from your LNbits wallet settings
-  # NEVER share this key publicly!
-  # Optional: If not set, plugin will work in read-only mode
-  api_key: ""
-  
+
+  # Network setting (must match your LNbits instance)
+  # Options: "testnet", "signet" 
+  network: "testnet"
+
+  # ADMIN API Key (REQUIRED for creating player wallets)
+  # This is YOUR admin key that can create new wallets
+  # Get from: LNbits > User Manager > Admin API Key
+  # 
+  # IMPORTANT: 
+  # - This must be an ADMIN key (not a regular wallet key)
+  # - Never share this key!
+  # - Keep it secure (only server admin should see this file)
+  api_key: "YOUR_ADMIN_KEY_HERE"
+
   # Tor/SOCKS5 Proxy Settings (for .onion addresses)
   use_tor_proxy: false
   tor_proxy_type: "socks5"     # Options: "socks5", "socks", "http", "https"
   tor_proxy_host: "127.0.0.1"  # Local Tor SOCKS5 proxy
   tor_proxy_port: 9050         # Default Tor SOCKS5 port
-  # Skip TLS verification for self-signed certificates (useful for .onion with self-signed certs)
+
+  # Skip TLS verification for self-signed certificates
+  # Set to true for .onion addresses with self-signed certs
   skip_tls_verify: false
 
-# LND Configuration (if backend: lnd)
+# ==========================================
+# LND Configuration (Advanced)
+# ==========================================
+# With LND, all players share the node wallet
+# (LND doesn't support per-user wallets like LNbits :c)
+
 lnd:
   # LND REST API host (.onion or clearnet)
-  # Example: "localhost" or "abc123xyz.onion"
   host: "localhost"
-  
+
   # LND REST API port (default: 8080)
   port: 8080
-  
-  # Use HTTPS (true for clearnet, false for .onion)
+
+  # Use HTTPS (true for clearnet, false for plain HTTP)
   use_https: true
-  
+
+  # Network setting (must match your LND node)
+  network: "testnet"
+
   # Macaroon authentication (choose ONE method):
   
-  # Method 1: Path to macaroon file (e.g., admin.macaroon)
+  # Method 1: Path to macaroon file
   # Example: "/home/bitcoin/.lnd/data/chain/bitcoin/testnet/admin.macaroon"
   macaroon_path: ""
-  
+
   # Method 2: Macaroon as hex string (better for .onion nodes)
   # Get with: xxd -ps -u -c 1000 admin.macaroon
   macaroon_hex: ""
-  
+
   # Tor proxy settings (for .onion LND nodes)
   use_tor_proxy: false
   tor_proxy_host: "127.0.0.1"
   tor_proxy_port: 9050
-  # Skip TLS verification for self-signed certificates (useful for .onion with self-signed certs)
+
+  # Skip TLS verification for self-signed certificates
   skip_tls_verify: false
 
 # ==========================================
 # TESTNET RESOURCES
 # ==========================================
-# Need testnet Bitcoin? Get some from faucets:
-# - https://coinfaucet.eu/en/btc-testnet/
-# - https://testnet-faucet.mempool.co/
+# LNbits Testnet Instances:
+#   - https://demo.lnbits.com (public, supports testnet)
+#   - Self-hosted: https://github.com/lnbits/lnbits
 #
-# LNbits instances:
-# - https://legend.lnbits.com (supports testnet)
-# - Host your own: https://github.com/lnbits/lnbits
+# LND Setup Resources:
+#   - REST API docs: https://api.lightning.community/rest/
+#   - Get macaroon hex: xxd -ps -u -c 1000 admin.macaroon
 #
-# LND Setup:
-# - REST API: https://api.lightning.community/rest/
-# - Get macaroon hex: xxd -ps -u -c 1000 admin.macaroon
+# Lightning Network Explorers (Testnet):
+#   - https://mempool.space/testnet/lightning
+#   - https://1ml.com/testnet
+# ==========================================
+
+# ==========================================
+# HOW IT WORKS
+# ==========================================
+# 1. Admin sets up LNbits testnet instance with admin key
+# 2. Player joins server and runs /wallet 
+# 3. Plugin creates a REAL LNbits wallet for that player (if there was none)
+# 4. Player can create invoices (/invoice 100 coffee)
+# 5. When invoice is paid, player's wallet is credited
 # ==========================================

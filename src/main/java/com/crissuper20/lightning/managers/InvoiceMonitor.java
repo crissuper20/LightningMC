@@ -16,7 +16,7 @@ import java.util.concurrent.TimeUnit;
  * 
  * This uses a polling approach:
  * - Checks each pending invoice every X seconds
- * - When paid, notifies the player and credits their wallet
+ * - When paid, notifies the player
  * - Automatically removes expired/paid invoices
  */
 public class InvoiceMonitor {
@@ -32,7 +32,7 @@ public class InvoiceMonitor {
     private final ScheduledExecutorService scheduler;
     
     // Configuration
-    private static final long CHECK_INTERVAL_SECONDS = 10; // Check every 10 seconds
+    private static final long CHECK_INTERVAL_SECONDS = 3; // Check every 10 seconds
     private static final long INVOICE_EXPIRY_MINUTES = 60; // Remove after 1 hour
     
     public InvoiceMonitor(LightningPlugin plugin) {
@@ -159,15 +159,15 @@ public class InvoiceMonitor {
             
             // Sync to main thread for Bukkit API calls
             Bukkit.getScheduler().runTask(plugin, () -> {
-                player.sendMessage("§8§m                                                    ");
-                player.sendMessage("§a§l✓ INVOICE PAID!");
+                player.sendMessage("§8§m");
+                player.sendMessage("§a§lINVOICE PAID!");
                 player.sendMessage("");
                 player.sendMessage("§7Amount: §f" + pending.amountSats + " sats");
                 if (pending.memo != null && !pending.memo.isEmpty()) {
                     player.sendMessage("§7Memo: §f" + pending.memo);
                 }
                 player.sendMessage("§7New balance: §f" + newBalance + " sats");
-                player.sendMessage("§8§m                                                    ");
+                player.sendMessage("§8§m");
                 
                 // Play sound effect (optional)
                 player.playSound(player.getLocation(), "entity.experience_orb.pickup", 1.0f, 1.0f);

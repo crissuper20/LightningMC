@@ -9,10 +9,14 @@ import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.concurrent.CompletableFuture;
 
+/**
+ * LNbits Lightning Network client implementation.
+ * Supports per-player API keys for separate wallet operations.
+ */
 public class LNbitsClient extends AbstractLNClient {
     
     private final String host;
-    private final String apiKey;
+    private final String defaultApiKey; // Admin key from config (for wallet creation)
     private final boolean useHttps;
     private final boolean skipTlsVerify;
     private final boolean useTorProxy;
@@ -24,7 +28,7 @@ public class LNbitsClient extends AbstractLNClient {
         
         // Load LNbits-specific configuration
         this.host = plugin.getConfig().getString("lnbits.host", "localhost");
-        this.apiKey = plugin.getConfig().getString("lnbits.api_key", "");
+        this.defaultApiKey = plugin.getConfig().getString("lnbits.api_key", "");
         this.useHttps = plugin.getConfig().getBoolean("lnbits.use_https", true);
         this.skipTlsVerify = plugin.getConfig().getBoolean("lnbits.skip_tls_verify", false);
         this.useTorProxy = plugin.getConfig().getBoolean("lnbits.use_tor_proxy", false);
@@ -35,20 +39,30 @@ public class LNbitsClient extends AbstractLNClient {
         logger.debug("  Host: " + host);
         logger.debug("  Use HTTPS: " + useHttps);
         logger.debug("  Use Tor: " + useTorProxy);
-        logger.debug("  API Key length: " + apiKey.length());
+        logger.debug("  Default API Key length: " + defaultApiKey.length());
     }
+
+    @Override
     public String getBackendName() {
         return "LNbits";
     }
+
+    @Override
     protected boolean shouldUseTor() {
         return useTorProxy;
     }
+
+    @Override
     protected boolean shouldSkipTlsVerify() {
         return skipTlsVerify;
     }
+
+    @Override
     protected String getTorProxyHost() {
         return torProxyHost;
     }
+
+    @Override
     protected int getTorProxyPort() {
         return torProxyPort;
     }
@@ -58,12 +72,18 @@ public class LNbitsClient extends AbstractLNClient {
         return protocol + host + "/api/v1";
     }
 
-    @Override
-    public CompletableFuture<LNResponse<JsonObject>> getWalletInfoAsync() {
+    // ========================================================================
+    // Per-Player API Key Methods (NEW!)
+    // ========================================================================
+
+    /**
+     * Get wallet info using a specific API key (for per-player wallets)
+     */
+    public CompletableFuture<LNResponse<JsonObject>> getWalletInfoWithKey(String apiKey) {
         return CompletableFuture.supplyAsync(() -> {
             String url = baseUrl() + "/wallet";
             
-            logger.debug("=== getWalletInfo Request (LNbits) ===");
+            logger.debug("=== getWalletInfo Request (LNbits - Custom Key) ===");
             logger.debug("URL: " + url);
             
             HttpRequest request = HttpRequest.newBuilder()
@@ -101,29 +121,14 @@ public class LNbitsClient extends AbstractLNClient {
         }, httpExecutor);
     }
 
-    @Override
-    public CompletableFuture<LNResponse<Long>> getBalanceAsync(String walletId) {
-        logger.debug("=== getBalance Request (LNbits) ===");
-        
-        // LNbits balance is in the wallet info response
-        return getWalletInfoAsync().thenApply(walletInfo -> {
-            if (walletInfo.success) {
-                long balanceMsat = walletInfo.data.get("balance").getAsLong();
-                long balance = balanceMsat / 1000; // msat to sat
-                logger.debug("Balance: " + balanceMsat + " msat = " + balance + " sats");
-                return LNResponse.success(balance, walletInfo.statusCode);
-            }
-            logger.debug("Failed to get balance: " + walletInfo.error);
-            return LNResponse.failure(walletInfo.error, walletInfo.statusCode);
-        });
-    }
-
-    @Override
-    public CompletableFuture<LNResponse<Invoice>> createInvoiceAsync(long amountSats, String memo) {
+    /**
+     * Create invoice using a specific API key (for player's wallet)
+     */
+    public CompletableFuture<LNResponse<Invoice>> createInvoiceWithKey(String apiKey, long amountSats, String memo) {
         return CompletableFuture.supplyAsync(() -> {
             String url = baseUrl() + "/payments";
             
-            logger.debug("=== createInvoice Request (LNbits) ===");
+            logger.debug("=== createInvoice Request (LNbits - Custom Key) ===");
             logger.debug("Amount: " + amountSats + " sats");
             logger.debug("Memo: " + memo);
             
@@ -190,12 +195,14 @@ public class LNbitsClient extends AbstractLNClient {
         }, httpExecutor);
     }
 
-    @Override
-    public CompletableFuture<LNResponse<Boolean>> checkInvoiceAsync(String paymentHash) {
+    /**
+     * Check invoice status using a specific API key
+     */
+    public CompletableFuture<LNResponse<Boolean>> checkInvoiceWithKey(String apiKey, String paymentHash) {
         return CompletableFuture.supplyAsync(() -> {
             String url = baseUrl() + "/payments/" + paymentHash;
             
-            logger.debug("=== checkInvoice Request (LNbits) ===");
+            logger.debug("=== checkInvoice Request (LNbits - Custom Key) ===");
             logger.debug("Payment hash: " + paymentHash);
             
             HttpRequest request = HttpRequest.newBuilder()
@@ -232,61 +239,102 @@ public class LNbitsClient extends AbstractLNClient {
         }, httpExecutor);
     }
 
-@Override
-public CompletableFuture<LNResponse<JsonObject>> payInvoiceAsync(String bolt11) {
-    return CompletableFuture.supplyAsync(() -> {
-        String url = baseUrl() + "/payments";
+    // ========================================================================
+    // Default Methods (Use default admin key - for backwards compatibility)
+    // ========================================================================
+
+    @Override
+    public CompletableFuture<LNResponse<JsonObject>> getWalletInfoAsync() {
+        return getWalletInfoWithKey(defaultApiKey);
+    }
+
+    @Override
+    public CompletableFuture<LNResponse<Long>> getBalanceAsync(String walletId) {
+        logger.debug("=== getBalance Request (LNbits) ===");
         
-        logger.debug("=== payInvoice Request (LNbits) ===");
-        logger.debug("URL: " + url);
-        logger.debug("Full BOLT11 length: " + bolt11.length());
-        logger.debug("BOLT11 first 50 chars: " + bolt11.substring(0, Math.min(50, bolt11.length())));
-        logger.debug("BOLT11 last 50 chars: " + bolt11.substring(Math.max(0, bolt11.length() - 50)));
-        logger.debug("Has whitespace: " + (bolt11.length() != bolt11.trim().length()));
-        logger.debug("Contains newlines: " + bolt11.contains("\n"));
-        
-        String body = String.format("{\"out\":true,\"bolt11\":\"%s\"}", bolt11);
-        
-        logger.debug("Request body: " + body);
-        logger.debug("Request body length: " + body.length());
-        
-        HttpRequest request = HttpRequest.newBuilder()
-            .uri(URI.create(url))
-            .header("Content-Type", "application/json")
-            .header("X-Api-Key", apiKey)
-            .timeout(Duration.ofSeconds(30))
-            .POST(HttpRequest.BodyPublishers.ofString(body))
-            .build();
-        
-        long startTime = System.currentTimeMillis();
-        
-        try {
-            HttpResponse<String> response = httpClient.send(
-                request, 
-                HttpResponse.BodyHandlers.ofString()
-            );
-            
-            long duration = System.currentTimeMillis() - startTime;
-            logger.debug("Response received in " + duration + "ms");
-            logger.debug("Response status: " + response.statusCode());
-            logger.debug("Response body: " + response.body());
-            logger.debug("=====================================");
-            
-            if (response.statusCode() == 201 || response.statusCode() == 200) {
-                JsonObject data = gson.fromJson(response.body(), JsonObject.class);
-                logger.info("Payment sent successfully");
-                return LNResponse.success(data, response.statusCode());
-            } else {
-                plugin.getLogger().warning("Payment failed with status: " + response.statusCode());
-                logger.debug("Full error response: " + response.body());
-                return LNResponse.failure("Payment failed: " + response.body(), 
-                    response.statusCode());
+        // LNbits balance is in the wallet info response
+        return getWalletInfoAsync().thenApply(walletInfo -> {
+            if (walletInfo.success) {
+                long balanceMsat = walletInfo.data.get("balance").getAsLong();
+                long balance = balanceMsat / 1000; // msat to sat
+                logger.debug("Balance: " + balanceMsat + " msat = " + balance + " sats");
+                return LNResponse.success(balance, walletInfo.statusCode);
             }
-        } catch (Exception e) {
-            logger.debug("Exception during payment: " + e.getClass().getName() + " - " + e.getMessage());
-            logNetworkError(e, url, "X-Api-Key: " + maskSecret(apiKey));
-            return LNResponse.failure("Network error: " + e.getMessage(), -1);
-        }
-    }, httpExecutor);
+            logger.debug("Failed to get balance: " + walletInfo.error);
+            return LNResponse.failure(walletInfo.error, walletInfo.statusCode);
+        });
+    }
+
+    @Override
+    public CompletableFuture<LNResponse<Invoice>> createInvoiceAsync(long amountSats, String memo) {
+        return createInvoiceWithKey(defaultApiKey, amountSats, memo);
+    }
+
+    @Override
+    public CompletableFuture<LNResponse<Boolean>> checkInvoiceAsync(String paymentHash) {
+        return checkInvoiceWithKey(defaultApiKey, paymentHash);
+    }
+
+    @Override
+    public CompletableFuture<LNResponse<JsonObject>> payInvoiceAsync(String bolt11) {
+        return CompletableFuture.supplyAsync(() -> {
+            String url = baseUrl() + "/payments";
+            
+            logger.debug("=== payInvoice Request (LNbits) ===");
+            logger.debug("BOLT11: " + bolt11.substring(0, Math.min(50, bolt11.length())) + "...");
+            
+            String body = String.format("{\"out\":true,\"bolt11\":\"%s\"}", bolt11);
+            
+            HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(url))
+                .header("Content-Type", "application/json")
+                .header("X-Api-Key", defaultApiKey)
+                .timeout(Duration.ofSeconds(30))
+                .POST(HttpRequest.BodyPublishers.ofString(body))
+                .build();
+            
+            long startTime = System.currentTimeMillis();
+            
+            try {
+                HttpResponse<String> response = httpClient.send(
+                    request, 
+                    HttpResponse.BodyHandlers.ofString()
+                );
+                
+                long duration = System.currentTimeMillis() - startTime;
+                logger.debug("Response received in " + duration + "ms");
+                logger.debug("Status: " + response.statusCode());
+                
+                if (response.statusCode() == 201 || response.statusCode() == 200) {
+                    JsonObject data = gson.fromJson(response.body(), JsonObject.class);
+                    logger.info("Payment sent successfully");
+                    return LNResponse.success(data, response.statusCode());
+                } else {
+                    plugin.getLogger().warning("Payment failed: " + response.statusCode());
+                    return LNResponse.failure("Payment failed: " + response.body(), 
+                        response.statusCode());
+                }
+            } catch (Exception e) {
+                logNetworkError(e, url, "X-Api-Key: " + maskSecret(defaultApiKey));
+                return LNResponse.failure("Network error: " + e.getMessage(), -1);
+            }
+        }, httpExecutor);
+    }
+//vro is lazy 
+public CompletableFuture<LNResponse<Invoice>> createInvoiceAsync(long amountSats, String memo, String key) {
+return createInvoiceAsync(amountSats, memo);
+}
+
+public CompletableFuture<LNResponse<JsonObject>> payInvoiceAsync(String bolt11, String key) {
+    return payInvoiceAsync(bolt11);
+}
+
+public CompletableFuture<LNResponse<JsonObject>> getWalletInfoAsync(String key) {
+    return getWalletInfoAsync();
+}
+
+public CompletableFuture<LNResponse<Boolean>> checkInvoiceAsync(String paymentHash, String key) {
+    return checkInvoiceAsync(paymentHash);
 }
 }
+
