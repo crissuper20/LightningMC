@@ -10,11 +10,11 @@ A Minecraft plugin that integrates the Lightning Network as an economy system. C
 
 ## Features
 
- ** Lightning Wallets** - Automatic wallet creation for each player
- ** QR Code Invoices** - Generate scannable payment QR codes on in-game maps
- ** Real Bitcoin** - Use actual Lightning Network payments (testnet/mainnet)
- ** Tor Support** - Connect via Tor for privacy
- ** Configurable** - Rate limits, transaction limits, and monitoring settings
+ **Lightning Wallets** - Automatic wallet creation for each player
+ **QR Code Invoices** - Generate scannable payment QR codes on in-game maps
+ **Real Bitcoin** - Use actual Lightning Network payments (testnet/mainnet)
+ **Tor Support** - Connect via Tor for privacy
+ **Configurable** - Rate limits, transaction limits, and monitoring settings
 
 ## Quick Start
 
@@ -43,14 +43,7 @@ lnbits:
 ```
 /invoice 100 memo text
 ```
-
-## 🔧 Server Support
-
-| Minecraft Version | Status | API Level |
-|-------------------|--------|-----------|
-| 1.16 - 1.21+ | ✅ Supported | 1.16 |
-| Folia | 📋 Planned | - |
-
+(i dont actually know what versions are actually working, i will test and put it back soon)
 Minimum: **Minecraft 1.16** (api-version: 1.16)
 
 ## Configuration Highlights
