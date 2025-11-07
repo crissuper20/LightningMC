@@ -10,11 +10,11 @@ A Minecraft plugin that integrates the Lightning Network as an economy system. C
 
 ## Features
 
- **Lightning Wallets** - Automatic wallet creation for each player
- **QR Code Invoices** - Generate scannable payment QR codes on in-game maps
- **Real Bitcoin** - Use actual Lightning Network payments (testnet/mainnet)
- **Tor Support** - Connect via Tor for privacy
- **Configurable** - Rate limits, transaction limits, and monitoring settings
+- **Lightning Wallets** - Automatic wallet creation for each player
+- **QR Code Invoices** - Generate scannable payment QR codes on in-game maps
+- **Real Bitcoin** - Use actual Lightning Network payments (testnet/mainnet)
+- **Tor Support** - Connect via Tor for privacy
+- **Configurable** - Rate limits, transaction limits, and monitoring settings
 
 ## Quick Start
 
