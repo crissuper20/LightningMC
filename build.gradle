@@ -9,7 +9,7 @@ plugins {
 }
 
 group = "com.crissuper20.lightning"
-
+version = "development"
 static def getTime() {
     SimpleDateFormat sdf = new SimpleDateFormat("yyMMdd-HHmm")
     sdf.setTimeZone(TimeZone.getTimeZone("UTC"))

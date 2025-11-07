@@ -1,121 +1,122 @@
-# ==========================================
-# Lightning Network Minecraft Plugin
-# TESTNET ONLY - Real Bitcoin Learning Tool
-# ==========================================
-
-# Enable debug logging (verbose output)
+# Enable debug logging
 debug: false
 
-# Network Type (testnet/signet ONLY - mainnet is blocked)
-# This is checked on startup to ensure EULA compliance
-network: "testnet"
-
-# Lightning Backend Selection
-# Choose: "lnbits" or "lnd"
-backend: "lnbits"
-
-# ==========================================
-# LNbits Configuration (Recommended)
-# ==========================================
-# With LNbits, each player gets their own Lightning wallet!
-# You need an ADMIN API key to create wallets.
-
+# ================================================
+# LNbits Configuration
+# ================================================
 lnbits:
-  # LNbits instance hostname (without https://)
-  # MUST be a testnet/signet instance
-  # Examples:
-  #   - "demo.lnbits.com" (public testnet)
-  #   - "localhost:5000" (self-hosted)
-  #   - "yournode.onion" (Tor hidden service)
+  # LNbits instance URL (without /api)
   host: "demo.lnbits.com"
-
-  # Use HTTPS connection (recommended for remote servers)
-  # Set to false for local/development or .onion with HTTP
-  use_https: true
-
-  # Network setting (must match your LNbits instance)
-  # Options: "testnet", "signet" 
-  network: "testnet"
-
-  # ADMIN API Key (REQUIRED for creating player wallets)
-  # This is YOUR admin key that can create new wallets
-  # Get from: LNbits > User Manager > Admin API Key
-  # 
-  # IMPORTANT: 
-  # - This must be an ADMIN key (not a regular wallet key)
-  # - Never share this key!
-  # - Keep it secure (only server admin should see this file)
-  api_key: "YOUR_ADMIN_KEY_HERE"
-
-  # Tor/SOCKS5 Proxy Settings (for .onion addresses)
-  use_tor_proxy: false
-  tor_proxy_type: "socks5"     # Options: "socks5", "socks", "http", "https"
-  tor_proxy_host: "127.0.0.1"  # Local Tor SOCKS5 proxy
-  tor_proxy_port: 9050         # Default Tor SOCKS5 port
-
-  # Skip TLS verification for self-signed certificates
-  # Set to true for .onion addresses with self-signed certs
-  skip_tls_verify: false
-
-# ==========================================
-# LND Configuration (Advanced)
-# ==========================================
-# With LND, all players share the node wallet
-# (LND doesn't support per-user wallets like LNbits :c)
-
-lnd:
-  # LND REST API host (.onion or clearnet)
-  host: "localhost"
-
-  # LND REST API port (default: 8080)
-  port: 8080
-
-  # Use HTTPS (true for clearnet, false for plain HTTP)
-  use_https: true
-
-  # Network setting (must match your LND node)
-  network: "testnet"
-
-  # Macaroon authentication (choose ONE method):
   
-  # Method 1: Path to macaroon file
-  # Example: "/home/bitcoin/.lnd/data/chain/bitcoin/testnet/admin.macaroon"
-  macaroon_path: ""
-
-  # Method 2: Macaroon as hex string (better for .onion nodes)
-  # Get with: xxd -ps -u -c 1000 admin.macaroon
-  macaroon_hex: ""
-
-  # Tor proxy settings (for .onion LND nodes)
+  # Use HTTPS (recommended)
+  use_https: true
+  
+  # Admin API key (required for creating player wallets)
+  # Get this from your LNbits admin wallet
+  api_key: "your_admin_key_here"
+  
+  # Network (testnet/signet)
+  network: testnet
+  
+  # Tor configuration (mainly for tor)
   use_tor_proxy: false
   tor_proxy_host: "127.0.0.1"
   tor_proxy_port: 9050
-
-  # Skip TLS verification for self-signed certificates
+  
+  # Skip TLS verification (only for development)
   skip_tls_verify: false
 
-# ==========================================
-# TESTNET RESOURCES
-# ==========================================
-# LNbits Testnet Instances:
-#   - https://demo.lnbits.com (public, supports testnet)
-#   - Self-hosted: https://github.com/lnbits/lnbits
-#
-# LND Setup Resources:
-#   - REST API docs: https://api.lightning.community/rest/
-#   - Get macaroon hex: xxd -ps -u -c 1000 admin.macaroon
-#
-# Lightning Network Explorers (Testnet):
-#   - https://mempool.space/testnet/lightning
-#   - https://1ml.com/testnet
-# ==========================================
+# ================================================
+# Invoice Monitor Settings
+# ================================================
+invoice_monitor:
+  # How often to check invoices (seconds)
+  check_interval_seconds: 3
+  
+  # Fast check for recent invoices (seconds)
+  fast_check_seconds: 3
+  
+  # Slow check for old invoices (seconds)
+  slow_check_seconds: 15
+  
+  # When to switch to slow checking (minutes)
+  slow_check_threshold_minutes: 10
+  
+  # When to expire unpaid invoices (minutes)
+  expiry_minutes: 60
 
-# ==========================================
-# HOW IT WORKS
-# ==========================================
-# 1. Admin sets up LNbits testnet instance with admin key
-# 2. Player joins server and runs /wallet 
-# 3. Plugin creates a REAL LNbits wallet for that player (if there was none)
-# 4. Player can create invoices (/invoice 100 coffee)
-# 5. When invoice is paid, player's wallet is credited
-# ==========================================
+# ================================================
+# Rate Limiting 
+# ================================================
+rate_limits:
+  # Invoice creation limits
+  invoices_per_minute: 5
+  
+  # Payment limits
+  payments_per_minute: 10
+  
+  # Balance check limits
+  balance_checks_per_minute: 20
+
+# ================================================
+# Transaction Limits
+# ================================================
+limits:
+  # Minimum invoice amount (sats)
+  min_invoice_amount: 1
+  
+  # Maximum invoice amount (sats)
+  max_invoice_amount: 1000000
+  
+  # Minimum payment amount (sats)
+  min_payment_amount: 1
+  
+  # Maximum payment amount (sats)
+  max_payment_amount: 1000000
+  
+  # Maximum wallet balance (sats, 0 = no limit)
+  max_wallet_balance: 0
+
+# ================================================
+# Retry Configuration
+# ================================================
+network:
+  # Maximum retry attempts for failed operations
+  max_retries: 3
+  
+  # Initial retry delay (milliseconds)
+  retry_delay_ms: 1000
+  
+  # Backoff multiplier
+  retry_backoff: 2.0
+  
+  # Request timeout (seconds)
+  timeout_seconds: 15
+
+# ================================================
+# Permissions
+# ================================================
+# Defined in server's permissions plugin:
+#   lightning.use - Basic usage (create invoices, check balance)
+#   lightning.pay - Send payments
+#   lightning.admin - Admin commands
+
+# ================================================
+# Messages (Customizable)
+# ================================================
+messages:
+  prefix: "§8[§eLightning§8]§r "
+  
+  invoice_created: "§aInvoice created! Scan QR code or copy bolt11 invoice."
+  invoice_paid: "§a§lInvoice paid! §r§7Balance updated."
+  invoice_expired: "§cYour invoice has expired. Create a new one."
+  
+  payment_success: "§aPayment sent successfully!"
+  payment_failed: "§cPayment failed: {reason}"
+  
+  insufficient_balance: "§cInsufficient balance. You have {balance} sats, you need {amount} sats."
+  
+  rate_limited: "§cRate Limit! Please wait {time} before trying again."
+  
+  no_wallet: "§cYou don't have a wallet yet. One will be created automatically."
+  wallet_created: "§aWallet created successfully!"

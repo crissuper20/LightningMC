@@ -5,6 +5,10 @@ api-version: "1.16"
 author: crissuper20
 description: lnbits on minecraft
 commands:
+  lnadmin:
+    description: Command for admin stuff
+    usage: /<command> 
+    permission: lightning.admin
   balance:
     description: Shows your Lightning balance
     usage: /<command>
@@ -34,11 +38,6 @@ permissions:
   lightning.wallet:
     description: Allows using /wallet
     default: true
-  example.test:
-    description: DESCRIPTION
-    default: true
-  example.*:
-    description: Grants all other permissions
-    default: false
-    children:
-      example.test: true
+  lightning.admin:
+    description: Allows using /lnadmin
+    default: op

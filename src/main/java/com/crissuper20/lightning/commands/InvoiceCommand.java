@@ -1,141 +1,238 @@
 package com.crissuper20.lightning.commands;
 
 import com.crissuper20.lightning.LightningPlugin;
-import com.crissuper20.lightning.clients.LNClient;
-import com.crissuper20.lightning.clients.LNClient.Invoice;
-import com.crissuper20.lightning.util.QRMapGenerator;
+import com.crissuper20.lightning.managers.InvoiceMonitor;
+import com.crissuper20.lightning.managers.LNService;
+import com.crissuper20.lightning.managers.WalletManager;
+import com.crissuper20.lightning.util.RateLimiter;
+import org.bukkit.Bukkit;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
-import org.bukkit.inventory.ItemStack;
 
-import java.util.Arrays;
-import java.util.concurrent.CompletableFuture;
-
+/**
+ * /invoice command - Create Lightning invoices
+ * 
+ * Enhanced with:
+ * - Rate limiting
+ * - Metrics tracking
+ * - Transaction limits
+ * - Better error handling
+ * - QR code generation (future)
+ */
 public class InvoiceCommand implements CommandExecutor {
+
     private final LightningPlugin plugin;
+    private final LNService lnService;
+    private final WalletManager walletManager;
+    private final InvoiceMonitor invoiceMonitor;
+    private final RateLimiter rateLimiter;
 
     public InvoiceCommand(LightningPlugin plugin) {
         this.plugin = plugin;
+        this.lnService = plugin.getLnService();
+        this.walletManager = plugin.getWalletManager();
+        this.invoiceMonitor = plugin.getInvoiceMonitor();
+        
+        // Rate limit from config
+        int limit = plugin.getConfig().getInt("rate_limits.invoices_per_minute", 5);
+        this.rateLimiter = RateLimiter.perMinute(limit);
     }
 
     @Override
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
-        // DEBUG: Log that command was triggered
-        plugin.getDebugLogger().debug("/invoice command triggered");
-        plugin.getDebugLogger().debug("Sender: " + sender.getName());
-        plugin.getDebugLogger().debug("Label: " + label);
-        plugin.getDebugLogger().debug("Args length: " + args.length);
-        plugin.getDebugLogger().debug("Args: " + String.join(", ", args));
-        
         if (!(sender instanceof Player)) {
-            plugin.getDebugLogger().debug("Sender is not a player, rejecting");
-            sender.sendMessage(LightningPlugin.formatError("This command can only be used by players."));
+            sender.sendMessage("§cThis command can only be used by players.");
             return true;
         }
 
         Player player = (Player) sender;
 
-        // Validate arguments (amount and memo)
-        if (args.length < 2) {
-            plugin.getDebugLogger().warning("Not enough arguments provided: " + args.length + " (need at least 2)");
-            player.sendMessage(LightningPlugin.formatError("Usage: /invoice <amount> <memo>"));
-            return true;
-        }
-        
-        plugin.getDebugLogger().debug("Arguments validated, proceeding with invoice creation");
-
-        // Ensure amount is a positive integer with no decimals or special characters
-        String amountStr = args[0].trim();
-        if (!amountStr.matches("\\d+")) {
-            player.sendMessage(LightningPlugin.formatError("Invalid amount specified. Use a positive integer."));
+        // Check rate limit
+        RateLimiter.RateLimitResult rateCheck = rateLimiter.check(player.getUniqueId());
+        if (!rateCheck.allowed) {
+            player.sendMessage("§cYou're creating invoices too quickly!");
+            player.sendMessage("§7" + rateCheck.getRetryMessage());
             return true;
         }
 
-        long amount;
+        // Validate arguments
+        if (args.length < 1) {
+            player.sendMessage("§cUsage: /invoice <amount> [memo]");
+            player.sendMessage("§7Example: /invoice 1000");
+            player.sendMessage("§7Example: /invoice 1000 Coffee donation");
+            return true;
+        }
+
+        // Parse amount
+        long amountSats;
         try {
-            amount = Long.parseLong(amountStr);
-            if (amount <= 0) {
-                player.sendMessage(LightningPlugin.formatError("Amount must be greater than zero."));
-                return true;
-            }
+            amountSats = Long.parseLong(args[0]);
         } catch (NumberFormatException e) {
-            player.sendMessage(LightningPlugin.formatError("Invalid amount specified."));
+            player.sendMessage("§cInvalid amount: " + args[0]);
+            player.sendMessage("§7Amount must be a whole number (sats)");
             return true;
         }
 
-        // Allow memo to be multiple words
-        String memo = String.join(" ", Arrays.copyOfRange(args, 1, args.length));
+        // Validate amount limits
+        long minAmount = plugin.getConfig().getLong("limits.min_invoice_amount", 1);
+        long maxAmount = plugin.getConfig().getLong("limits.max_invoice_amount", 100000);
 
-        // Create invoice asynchronously
-        CompletableFuture<LNClient.LNResponse<Invoice>> futureInvoice = 
-            plugin.getLnService().createInvoiceAsync(amount, memo);
+        if (amountSats < minAmount) {
+            player.sendMessage("§cAmount too small. Minimum: " + minAmount + " sats");
+            return true;
+        }
 
-        player.sendMessage(LightningPlugin.formatMessage("§7Creating invoice..."));
+        if (amountSats > maxAmount) {
+            player.sendMessage("§cAmount too large. Maximum: " + formatSats(maxAmount));
+            return true;
+        }
 
-        futureInvoice.thenAccept(response -> {
-            // All Bukkit interactions must run on the main server thread guh
-            plugin.getServer().getScheduler().runTask(plugin, () -> {
-                if (response.success) {
-                    Invoice invoice = response.data;
-                    String paymentRequest = invoice.getBolt11();
-                    String paymentHash = invoice.getPaymentHash();
-                    
-                    player.sendMessage(LightningPlugin.formatMessage("§aInvoice created successfully!"));
-                    plugin.getDebugLogger().debug("Invoice created for " + player.getName() + 
-                        ": " + amount + " sats, hash=" + paymentHash);
-
-                    // ⭐ REGISTER INVOICE WITH MONITOR - THIS WAS MISSING!
-                    plugin.getInvoiceMonitor().trackInvoice(player, paymentHash, amount, memo);
-
-                    // Always show the invoice text in chat
-                    player.sendMessage(LightningPlugin.formatMessage("§7Invoice: §f" + paymentRequest));
-
-                    // Try to generate and give QR code map using QRMapGenerator
-                    // This will try QRMapRenderer first, then fall back to QRMap shim
-                    try {
-                        // Attempt 1: Try to get an ItemStack directly
-                        ItemStack mapItem = QRMapGenerator.generate(player, paymentRequest);
-                        
-                        if (mapItem != null) {
-                            // Success - ItemStack was returned and added to inventory
-                            player.sendMessage(LightningPlugin.formatMessage("§aQR code map created and given to you."));
-                            plugin.getDebugLogger().debug("QR map successfully created via ItemStack return");
-                        } else {
-                            // Attempt 2: Try side-effect giving (giveMap adds to inventory directly)
-                            boolean success = QRMapGenerator.giveMap(player, paymentRequest);
-                            
-                            if (success) {
-                                player.sendMessage(LightningPlugin.formatMessage("§aQR code map created and given to you."));
-                                plugin.getDebugLogger().debug("QR map successfully created via giveMap");
-                            } else {
-                                // Both methods failed - warn but invoice text is already shown
-                                player.sendMessage(LightningPlugin.formatError("§eQR generation failed (invoice shown above)."));
-                                plugin.getDebugLogger().warning("QR generation failed for invoice: " + paymentRequest);
-                            }
-                        }
-                    } catch (Exception e) {
-                        // Handle any unexpected errors during QR generation
-                        player.sendMessage(LightningPlugin.formatError("§eQR generation error (invoice shown above)."));
-                        plugin.getDebugLogger().error("Unexpected error during QR generation for " + player.getName(), e);
-                    }
-                    
-                } else {
-                    player.sendMessage(LightningPlugin.formatError("Failed to create invoice: " + response.error));
-                    plugin.getDebugLogger().warning("Invoice creation failed for " + player.getName() + 
-                        ": " + response.error + " (status: " + response.statusCode + ")");
+        // Check max wallet balance limit (if set)
+        long maxBalance = plugin.getConfig().getLong("limits.max_wallet_balance", 0);
+        if (maxBalance > 0) {
+            walletManager.getBalance(player).thenAccept(currentBalance -> {
+                if (currentBalance + amountSats > maxBalance) {
+                    Bukkit.getScheduler().runTask(plugin, () -> {
+                        player.sendMessage("§cThis would exceed your wallet limit!");
+                        player.sendMessage("§7Current: " + formatSats(currentBalance));
+                        player.sendMessage("§7Max: " + formatSats(maxBalance));
+                    });
                 }
             });
-        }).exceptionally(e -> {
-            // Log and inform player on main thread
-            plugin.getServer().getScheduler().runTask(plugin, () -> {
-                player.sendMessage(LightningPlugin.formatError("An error occurred while creating the invoice."));
-            });
-            plugin.getDebugLogger().error("Error creating invoice for " + player.getName(), e);
-            return null;
-        });
+        }
+
+        // Parse memo
+        String memo = "";
+        if (args.length > 1) {
+            memo = String.join(" ", java.util.Arrays.copyOfRange(args, 1, args.length));
+            if (memo.length() > 100) {
+                memo = memo.substring(0, 97) + "...";
+            }
+        }
+
+        // Ensure player has wallet
+        final String finalMemo = memo;
+        if (!walletManager.hasWallet(player)) {
+            player.sendMessage("§eCreating your Lightning wallet...");
+            
+            walletManager.getOrCreateWallet(player)
+                .thenAccept(wallet -> {
+                    if (wallet.has("id")) {
+                        Bukkit.getScheduler().runTask(plugin, () -> {
+                            player.sendMessage("§aWallet created! Creating invoice...");
+                            createInvoice(player, amountSats, finalMemo);
+                        });
+                    } else {
+                        Bukkit.getScheduler().runTask(plugin, () -> {
+                            player.sendMessage("§cFailed to create wallet. Please try again later.");
+                        });
+                    }
+                })
+                .exceptionally(ex -> {
+                    Bukkit.getScheduler().runTask(plugin, () -> {
+                        player.sendMessage("§cError creating wallet: " + ex.getMessage());
+                    });
+                    return null;
+                });
+            
+            return true;
+        }
+
+        // Create invoice
+        player.sendMessage("§eCreating invoice for " + formatSats(amountSats) + "...");
+        createInvoice(player, amountSats, memo);
 
         return true;
+    }
+
+    /**
+     * Create and track a Lightning invoice
+     */
+    private void createInvoice(Player player, long amountSats, String memo) {
+        try (var timer = plugin.getMetrics().startTiming("invoice_create")) {
+            
+            String finalMemo = memo.isEmpty() ? player.getName() + " deposit" : memo;
+            
+            lnService.createInvoiceForPlayer(player, amountSats, finalMemo)
+                .thenAccept(response -> {
+                    Bukkit.getScheduler().runTask(plugin, () -> {
+                        handleInvoiceResponse(player, amountSats, finalMemo, response);
+                    });
+                })
+                .exceptionally(ex -> {
+                    plugin.getMetrics().recordApiError();
+                    
+                    Bukkit.getScheduler().runTask(plugin, () -> {
+                        player.sendMessage("§cFailed to create invoice!");
+                        player.sendMessage("§7Error: " + ex.getMessage());
+                        plugin.getDebugLogger().error("Invoice creation failed for " + player.getName(), ex);
+                    });
+                    return null;
+                });
+                
+        }
+    }
+
+    /**
+     * Handle the invoice creation response
+     */
+    private void handleInvoiceResponse(Player player, long amountSats, String memo, 
+                                      LNService.LNResponse<LNService.Invoice> response) {
+        if (!response.success) {
+            player.sendMessage("§cFailed to create invoice!");
+            player.sendMessage("§7Error: " + response.error);
+            plugin.getMetrics().recordError("invoice_create", response.error);
+            return;
+        }
+
+        LNService.Invoice invoice = response.data;
+        
+        // Record metrics
+        plugin.getMetrics().recordInvoiceCreated(player.getUniqueId(), amountSats);
+
+        // Start monitoring
+        if (invoiceMonitor != null) {
+            invoiceMonitor.trackInvoice(player, invoice.paymentHash, amountSats, memo);
+        }
+
+        // Display invoice to player
+        displayInvoice(player, invoice, amountSats, memo);
+    }
+
+    /**
+     * Display invoice details to player
+     */
+    private void displayInvoice(Player player, LNService.Invoice invoice, long amountSats, String memo) {
+        player.sendMessage("§a§l INVOICE CREATED");
+        player.sendMessage("");
+        player.sendMessage("§eAmount: §f" + formatSats(amountSats));
+        
+        if (memo != null && !memo.isEmpty()) {
+            player.sendMessage("§eMemo: §f" + memo);
+        }
+        
+        player.sendMessage("");
+        player.sendMessage("§7Scan QR or copy invoice:");
+        
+        player.sendMessage("§f" + invoice.bolt11);
+        
+        player.sendMessage("");
+        player.sendMessage("§7Payment Hash:");
+        player.sendMessage("§8" + invoice.paymentHash.substring(0, 32) + "...");
+        
+        player.sendMessage("");
+        player.sendMessage("§7You'll be notified when paid!");
+        
+        plugin.getDebugLogger().info("Created invoice for " + player.getName() + ": " + 
+                                    amountSats + " sats, hash=" + invoice.paymentHash);
+    }
+
+    private String formatSats(long sats) {
+        if (sats >= 100_000_000) {
+            return String.format("%.8f BTC", sats / 100_000_000.0);
+        }
+        return String.format("%,d sats", sats);
     }
 }

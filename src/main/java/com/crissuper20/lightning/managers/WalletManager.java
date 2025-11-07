@@ -1,8 +1,8 @@
 package com.crissuper20.lightning.managers;
 
 import com.crissuper20.lightning.LightningPlugin;
-import com.google.gson.Gson;
-import com.google.gson.JsonObject;
+import com.crissuper20.lightning.util.WalletEncryption;
+import com.google.gson.*;
 import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.Player;
@@ -10,359 +10,408 @@ import org.bukkit.entity.Player;
 import java.io.File;
 import java.io.IOException;
 import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
+import java.net.http.*;
 import java.time.Duration;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.UUID;
+import java.util.*;
+import java.util.concurrent.CompletableFuture;
 
 /**
- * Manages REAL LNbits wallets for each player.
- * Each player gets their own Lightning wallet with unique API keys.
- * 
- * Structure in wallets.yml:
- * wallets:
- *   player-uuid:
- *     wallet_id: "abc123..."
- *     admin_key: "key_abc..."      # Full control of player's wallet
- *     invoice_key: "inv_abc..."    # Read-only key
- *     wallet_name: "Player_Steve"
- *     created: 1698765432
- *     balance: 0                   # Cached balance (synced from LNbits)
+ * WalletManager - manages per-player LNbits wallets
  */
 public class WalletManager {
-    
+
     private final LightningPlugin plugin;
+    private final HttpClient httpClient;
+    private final WalletEncryption encryption;
+
+    private final String apiBase;
+    private final String adminKey;
+
     private final File walletFile;
     private FileConfiguration walletConfig;
-    
-    // In-memory cache for faster access
     private final Map<UUID, PlayerWallet> playerWallets;
     
-    // HTTP client for LNbits API calls
-    private final HttpClient httpClient;
-    
-    // Gson for JSON parsing
-    private final Gson gson;
+    // Track last balance fetch time to avoid excessive API calls
+    private final Map<UUID, Long> lastBalanceFetch;
+    private static final long BALANCE_CACHE_MS = 5000; // Cache for 5 seconds
 
-    public WalletManager(LightningPlugin plugin) {
+    public WalletManager(LightningPlugin plugin) throws Exception {
         this.plugin = plugin;
-        this.walletFile = new File(plugin.getDataFolder(), "wallets.yml");
-        this.playerWallets = new HashMap<>();
         this.httpClient = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(10))
             .build();
-        this.gson = new Gson();
+        this.playerWallets = new HashMap<>();
+        this.lastBalanceFetch = new HashMap<>();
+
+        // Get config values
+        String host = plugin.getConfig().getString("lnbits.host", "");
+        if (host.isEmpty()) {
+            throw new IllegalStateException("lnbits.host not configured!");
+        }
+
+        boolean useHttps = plugin.getConfig().getBoolean("lnbits.use_https", true);
+        this.apiBase = (useHttps ? "https://" : "http://") + host + "/api/v1";
+        this.adminKey = plugin.getConfig().getString("lnbits.api_key", "");
         
+        if (adminKey.isEmpty()) {
+            throw new IllegalStateException("lnbits.api_key not configured!");
+        }
+
+        // Initialize encryption
+        String encryptionPassword = plugin.getConfig().getString("wallet_encryption.password", "");
+        if (encryptionPassword.isEmpty()) {
+            // Generate and save a password
+            encryptionPassword = WalletEncryption.generatePassword();
+            plugin.getConfig().set("wallet_encryption.password", encryptionPassword);
+            plugin.saveConfig();
+        }
+        
+        String serverUuid = plugin.getConfig().getString("server_uuid", UUID.randomUUID().toString());
+        if (plugin.getConfig().getString("server_uuid") == null) {
+            plugin.getConfig().set("server_uuid", serverUuid);
+            plugin.saveConfig();
+        }
+        
+        this.encryption = new WalletEncryption(encryptionPassword, serverUuid);
+
+        // Create data folder
+        if (!plugin.getDataFolder().exists()) {
+            plugin.getDataFolder().mkdirs();
+        }
+
+        // Setup wallet file
+        this.walletFile = new File(plugin.getDataFolder(), "wallets.yml");
+        if (!walletFile.exists()) {
+            try {
+                walletFile.createNewFile();
+                plugin.getLogger().info("Created wallets.yml");
+            } catch (IOException e) {
+                throw new RuntimeException("Could not create wallets.yml", e);
+            }
+        }
+
+        // Load wallets
+        this.walletConfig = YamlConfiguration.loadConfiguration(walletFile);
         loadWallets();
     }
 
+    // ================================================================
+    // Loading / Saving
+    // ================================================================
+
     private void loadWallets() {
-        if (!walletFile.exists()) {
-            plugin.saveResource("wallets.yml", false);
+        playerWallets.clear();
+
+        if (!walletConfig.contains("wallets")) {
+            plugin.getLogger().info("No wallets to load");
+            return;
         }
-        
-        walletConfig = YamlConfiguration.loadConfiguration(walletFile);
-        
-        // Load existing wallets into memory
-        if (walletConfig.contains("wallets")) {
-            for (String uuidStr : walletConfig.getConfigurationSection("wallets").getKeys(false)) {
-                try {
-                    UUID uuid = UUID.fromString(uuidStr);
-                    String path = "wallets." + uuidStr + ".";
-                    
-                    PlayerWallet wallet = new PlayerWallet(
-                        walletConfig.getString(path + "wallet_id"),
-                        walletConfig.getString(path + "admin_key"),
-                        walletConfig.getString(path + "invoice_key"),
-                        walletConfig.getString(path + "wallet_name"),
-                        walletConfig.getLong(path + "created"),
-                        walletConfig.getLong(path + "balance", 0)
-                    );
-                    
-                    playerWallets.put(uuid, wallet);
-                } catch (IllegalArgumentException e) {
-                    plugin.getLogger().warning("Invalid UUID in wallets.yml: " + uuidStr);
+
+        for (String uuidStr : walletConfig.getConfigurationSection("wallets").getKeys(false)) {
+            try {
+                UUID uuid = UUID.fromString(uuidStr);
+                String path = "wallets." + uuidStr + ".";
+                
+                String walletId = walletConfig.getString(path + "wallet_id");
+                String adminKeyEncrypted = walletConfig.getString(path + "admin_key");
+                String invoiceKey = walletConfig.getString(path + "invoice_key");
+                String walletName = walletConfig.getString(path + "wallet_name");
+                long created = walletConfig.getLong(path + "created");
+                
+                // Decrypt admin key
+                String adminKeyDecrypted;
+                if (WalletEncryption.isEncrypted(adminKeyEncrypted)) {
+                    adminKeyDecrypted = encryption.decrypt(adminKeyEncrypted);
+                } else {
+                    // Legacy plaintext key - encrypt it
+                    adminKeyDecrypted = adminKeyEncrypted;
+                    plugin.getLogger().info("Encrypting legacy wallet key for " + walletName);
+                    walletConfig.set(path + "admin_key", encryption.encrypt(adminKeyDecrypted));
                 }
+                
+                PlayerWallet wallet = new PlayerWallet(
+                    walletId,
+                    adminKeyDecrypted,
+                    invoiceKey,
+                    walletName,
+                    created
+                );
+                
+                playerWallets.put(uuid, wallet);
+                
+            } catch (Exception e) {
+                plugin.getLogger().warning("Failed to load wallet " + uuidStr + ": " + e.getMessage());
             }
         }
-        
-        plugin.getDebugLogger().info("Loaded " + playerWallets.size() + " Lightning wallets from storage");
-    }
 
-    private void saveWallets() {
-        try {
-            walletConfig.save(walletFile);
-            plugin.getDebugLogger().debug("Wallets saved to disk");
-        } catch (IOException e) {
-            plugin.getLogger().severe("Could not save wallet data: " + e.getMessage());
-            plugin.getDebugLogger().error("Wallet save failed", e);
-        }
-    }
-
-    /**
-     * Save a specific player's wallet data
-     */
-    private void savePlayerWallet(UUID uuid) {
-        PlayerWallet wallet = playerWallets.get(uuid);
-        if (wallet == null) return;
+        plugin.getLogger().info("Loaded " + playerWallets.size() + " player wallets");
         
-        String path = "wallets." + uuid.toString() + ".";
-        walletConfig.set(path + "wallet_id", wallet.walletId);
-        walletConfig.set(path + "admin_key", wallet.adminKey);
-        walletConfig.set(path + "invoice_key", wallet.invoiceKey);
-        walletConfig.set(path + "wallet_name", wallet.walletName);
-        walletConfig.set(path + "created", wallet.created);
-        walletConfig.set(path + "balance", wallet.balance);
-        
+        // Save to encrypt any legacy keys
         saveWallets();
     }
 
-    // ========================================================================
-    // Wallet Management - Real LNbits Integration
-    // ========================================================================
+    private void saveWallets() {
+        if (walletConfig == null || walletFile == null) {
+            plugin.getLogger().warning("Cannot save wallets - not initialized");
+            return;
+        }
 
-    /**
-     * Check if player has a Lightning wallet
-     */
+        try {
+            walletConfig.save(walletFile);
+        } catch (IOException e) {
+            plugin.getLogger().severe("Failed to save wallets.yml: " + e.getMessage());
+        }
+    }
+
+    private void savePlayerWallet(UUID uuid) {
+        PlayerWallet w = playerWallets.get(uuid);
+        if (w == null || walletConfig == null) return;
+
+        try {
+            String path = "wallets." + uuid + ".";
+            walletConfig.set(path + "wallet_id", w.walletId);
+            walletConfig.set(path + "admin_key", encryption.encrypt(w.adminKey)); // Encrypted!
+            walletConfig.set(path + "invoice_key", w.invoiceKey);
+            walletConfig.set(path + "wallet_name", w.walletName);
+            walletConfig.set(path + "created", w.created);
+            
+            saveWallets();
+        } catch (Exception e) {
+            plugin.getLogger().severe("Failed to save wallet for " + uuid + ": " + e.getMessage());
+        }
+    }
+
+    // ================================================================
+    // Wallet management
+    // ================================================================
+
     public boolean hasWallet(Player player) {
         return playerWallets.containsKey(player.getUniqueId());
     }
-
-    /**
-     * Get player's wallet ID
-     */
-    public String getWalletId(Player player) {
-        PlayerWallet wallet = playerWallets.get(player.getUniqueId());
-        return wallet != null ? wallet.walletId : null;
+    public boolean hasWallet(UUID uuid) {
+        return playerWallets.containsKey(uuid);
     }
 
-    /**
-     * Get player's admin API key (for full wallet control)
-     */
-    public String getPlayerAdminKey(Player player) {
-        PlayerWallet wallet = playerWallets.get(player.getUniqueId());
-        return wallet != null ? wallet.adminKey : null;
-    }
-
-    /**
-     * Get player's invoice API key (read-only)
-     */
-    public String getPlayerInvoiceKey(Player player) {
-        PlayerWallet wallet = playerWallets.get(player.getUniqueId());
-        return wallet != null ? wallet.invoiceKey : null;
-    }
-
-    /**
-     * Create a REAL LNbits wallet for a player
-     */
-    public String createWallet(Player player) {
+    public CompletableFuture<JsonObject> getOrCreateWallet(Player player) {
         UUID uuid = player.getUniqueId();
-        
-        // Check if already has wallet
+
         if (playerWallets.containsKey(uuid)) {
-            plugin.getDebugLogger().warning("Player " + player.getName() + " already has a wallet!");
-            return playerWallets.get(uuid).walletId;
+            PlayerWallet w = playerWallets.get(uuid);
+            JsonObject obj = new JsonObject();
+            obj.addProperty("id", w.walletId);
+            obj.addProperty("adminkey", w.adminKey);
+            obj.addProperty("inkey", w.invoiceKey);
+            return CompletableFuture.completedFuture(obj);
+        }
+
+        return createWalletForPlayer(player);
+    }
+
+    private CompletableFuture<JsonObject> createWalletForPlayer(Player player) {
+        plugin.getLogger().info("Creating LNbits wallet for " + player.getName() + "...");
+        
+        String endpoint = apiBase + "/wallet";
+        
+        JsonObject body = new JsonObject();
+        body.addProperty("name", player.getName());
+
+        HttpRequest req = HttpRequest.newBuilder()
+                .uri(URI.create(endpoint))
+                .header("Content-Type", "application/json")
+                .header("X-Api-Key", adminKey)
+                .POST(HttpRequest.BodyPublishers.ofString(body.toString()))
+                .timeout(Duration.ofSeconds(15))
+                .build();
+
+        return httpClient.sendAsync(req, HttpResponse.BodyHandlers.ofString())
+                .thenApply(resp -> {
+                    int code = resp.statusCode();
+                    String bodyResp = resp.body();
+                    
+                    try {
+                        if (code >= 200 && code < 300) {
+                            JsonObject wallet = JsonParser.parseString(bodyResp).getAsJsonObject();
+                            
+                            // Validate response
+                            if (!wallet.has("id") || !wallet.has("adminkey") || !wallet.has("inkey")) {
+                                plugin.getLogger().severe("Invalid wallet response - missing required fields");
+                                return new JsonObject();
+                            }
+                            
+                            String walletId = wallet.get("id").getAsString();
+                            String adminkey = wallet.get("adminkey").getAsString();
+                            String inkey = wallet.get("inkey").getAsString();
+
+                            PlayerWallet w = new PlayerWallet(
+                                walletId, 
+                                adminkey, 
+                                inkey,
+                                player.getName(), 
+                                System.currentTimeMillis()
+                            );
+
+                            playerWallets.put(player.getUniqueId(), w);
+                            savePlayerWallet(player.getUniqueId());
+
+                            plugin.getLogger().info("✓ Wallet created for " + player.getName() + " (" + walletId + ")");
+                            return wallet;
+                            
+                        } else {
+                            plugin.getLogger().severe("Failed to create wallet (" + code + "): " + bodyResp);
+                            return new JsonObject();
+                        }
+                    } catch (Exception e) {
+                        plugin.getLogger().severe("Wallet creation error: " + e.getMessage());
+                        e.printStackTrace();
+                        return new JsonObject();
+                    }
+                })
+                .exceptionally(ex -> {
+                    plugin.getLogger().severe("Network error during wallet creation: " + ex.getMessage());
+                    return new JsonObject();
+                });
+    }
+
+    /**
+     * Fetches the real-time balance from LNbits
+     * This is now the ONLY way to get balance - no cached values
+     */
+    public CompletableFuture<Long> fetchBalanceFromLNbits(Player player) {
+        PlayerWallet w = playerWallets.get(player.getUniqueId());
+        if (w == null) {
+            plugin.getLogger().warning("Cannot fetch balance - no wallet for " + player.getName());
+            return CompletableFuture.completedFuture(0L);
+        }
+
+        String endpoint = apiBase + "/wallet";
+        
+        HttpRequest req = HttpRequest.newBuilder()
+                .uri(URI.create(endpoint))
+                .header("X-Api-Key", w.adminKey)
+                .GET()
+                .timeout(Duration.ofSeconds(10))
+                .build();
+
+        return httpClient.sendAsync(req, HttpResponse.BodyHandlers.ofString())
+                .thenApply(resp -> {
+                    int code = resp.statusCode();
+                    if (code >= 200 && code < 300) {
+                        try {
+                            JsonObject wallet = JsonParser.parseString(resp.body()).getAsJsonObject();
+                            // LNbits returns balance in millisats
+                            long balanceMsat = wallet.get("balance").getAsLong();
+                            long balanceSats = balanceMsat / 1000;
+                            
+                            plugin.getDebugLogger().debug("Fetched balance for " + player.getName() + ": " + balanceSats + " sats");
+                            
+                            // Update cache timestamp
+                            lastBalanceFetch.put(player.getUniqueId(), System.currentTimeMillis());
+                            
+                            return balanceSats;
+                        } catch (Exception e) {
+                            plugin.getLogger().warning("Failed to parse balance for " + player.getName() + ": " + e.getMessage());
+                            return 0L;
+                        }
+                    } else {
+                        plugin.getLogger().warning("Failed to fetch balance for " + player.getName() + " (" + code + "): " + resp.body());
+                        return 0L;
+                    }
+                })
+                .exceptionally(ex -> {
+                    plugin.getLogger().warning("Network error fetching balance for " + player.getName() + ": " + ex.getMessage());
+                    return 0L;
+                });
+    }
+
+    public CompletableFuture<Long> getBalance(Player player) {
+        Long lastFetch = lastBalanceFetch.get(player.getUniqueId());
+        long now = System.currentTimeMillis();
+        
+        // If cached recently, return cached value quickly
+        if (lastFetch != null && (now - lastFetch) < BALANCE_CACHE_MS) {
+            // Fetch anyway but don't block
+            return CompletableFuture.completedFuture(0L)
+                .thenCompose(v -> fetchBalanceFromLNbits(player));
         }
         
-        plugin.getDebugLogger().info("Creating LNbits wallet for " + player.getName());
+        // Cache stale or missing - fetch fresh
+        return fetchBalanceFromLNbits(player);
+    }
+
+    /**
+     * Sync all online player balances
+     */
+    public void syncAllBalances() {
+        plugin.getLogger().info("Syncing balances for " + playerWallets.size() + " wallets...");
         
-        try {
-            // Call LNbits API to create wallet
-            String walletName = "Player_" + player.getName() + "_" + uuid.toString().substring(0, 8);
-            JsonObject response = callLNbitsCreateWallet(walletName);
-            
-            if (response == null) {
-                throw new RuntimeException("Failed to create LNbits wallet - null response");
+        for (UUID uuid : playerWallets.keySet()) {
+            Player player = plugin.getServer().getPlayer(uuid);
+            if (player != null && player.isOnline()) {
+                fetchBalanceFromLNbits(player)
+                    .exceptionally(ex -> {
+                        plugin.getLogger().warning("Failed to sync balance for " + player.getName());
+                        return 0L;
+                    });
             }
-            
-            // Extract wallet details from response
-            String walletId = response.get("id").getAsString();
-            String adminKey = response.get("adminkey").getAsString();
-            String invoiceKey = response.get("inkey").getAsString();
-            
-            // Create wallet object
-            PlayerWallet wallet = new PlayerWallet(
-                walletId,
-                adminKey,
-                invoiceKey,
-                walletName,
-                System.currentTimeMillis(),
-                0L
-            );
-            
-            // Store in memory and disk
-            playerWallets.put(uuid, wallet);
-            savePlayerWallet(uuid);
-            
-            plugin.getDebugLogger().info("✓ Created LNbits wallet for " + player.getName() + 
-                ": " + walletId);
-            
-            return walletId;
-            
-        } catch (Exception e) {
-            plugin.getLogger().severe("Failed to create LNbits wallet for " + player.getName() + 
-                ": " + e.getMessage());
-            plugin.getDebugLogger().error("Wallet creation error", e);
-            throw new RuntimeException("Could not create Lightning wallet", e);
         }
     }
 
-    /**
-     * Call LNbits API to create a new wallet
-     */
-    private JsonObject callLNbitsCreateWallet(String walletName) throws Exception {
-        // Get LNbits config
-        String lnbitsHost = plugin.getConfig().getString("lnbits.host", "localhost");
-        boolean useHttps = plugin.getConfig().getBoolean("lnbits.use_https", true);
-        String adminKey = plugin.getConfig().getString("lnbits.api_key", "");
-        
-        if (adminKey.isEmpty()) {
-            throw new IllegalStateException("No LNbits admin key configured!");
-        }
-        
-        String protocol = useHttps ? "https://" : "http://";
-        String url = protocol + lnbitsHost + "/api/v1/wallet";
-        
-        // Prepare request body
-        String body = String.format("{\"name\":\"%s\"}", walletName);
-        
-        plugin.getDebugLogger().debug("Creating wallet via LNbits API: " + url);
-        plugin.getDebugLogger().debug("Wallet name: " + walletName);
-        
-        // Build HTTP request
-        HttpRequest request = HttpRequest.newBuilder()
-            .uri(URI.create(url))
-            .header("X-Api-Key", adminKey)
-            .header("Content-Type", "application/json")
-            .timeout(Duration.ofSeconds(10))
-            .POST(HttpRequest.BodyPublishers.ofString(body))
-            .build();
-        
-        // Send request
-        HttpResponse<String> response = httpClient.send(
-            request, 
-            HttpResponse.BodyHandlers.ofString()
-        );
-        
-        plugin.getDebugLogger().debug("LNbits response status: " + response.statusCode());
-        plugin.getDebugLogger().debug("LNbits response body: " + response.body());
-        
-        if (response.statusCode() == 201 || response.statusCode() == 200) {
-            // Parse JSON response using our own Gson instance
-            return gson.fromJson(response.body(), JsonObject.class);
-        } else {
-            throw new RuntimeException("LNbits API error: HTTP " + response.statusCode() + 
-                " - " + response.body());
-        }
+    // ================================================================
+    // Accessors
+    // ================================================================
+
+    public String getPlayerAdminKey(Player player) {
+        PlayerWallet w = playerWallets.get(player.getUniqueId());
+        return w != null ? w.adminKey : null;
     }
 
-    // ========================================================================
-    // Balance Management (Cached from LNbits)
-    // ========================================================================
-
-    /**
-     * Get player's cached balance
-     */
-    public long getBalance(Player player) {
-        PlayerWallet wallet = playerWallets.get(player.getUniqueId());
-        return wallet != null ? wallet.balance : 0L;
+    public String getPlayerInvoiceKey(Player player) {
+        PlayerWallet w = playerWallets.get(player.getUniqueId());
+        return w != null ? w.invoiceKey : null;
     }
 
-    /**
-     * Update cached balance (called by InvoiceMonitor when invoice is paid)
-     */
-    public void updateBalance(Player player, long newBalance) {
-        UUID uuid = player.getUniqueId();
-        PlayerWallet wallet = playerWallets.get(uuid);
-        
-        if (wallet != null) {
-            wallet.balance = newBalance;
-            savePlayerWallet(uuid);
-            plugin.getDebugLogger().debug("Updated cached balance for " + player.getName() + 
-                ": " + newBalance + " sats");
-        }
-    }
-
-    /**
-     * Add to cached balance (when invoice is paid)
-     */
-    public void addBalance(Player player, long amount) {
-        UUID uuid = player.getUniqueId();
-        PlayerWallet wallet = playerWallets.get(uuid);
-        
-        if (wallet != null) {
-            wallet.balance += amount;
-            savePlayerWallet(uuid);
-            plugin.getDebugLogger().debug("Added " + amount + " sats to " + player.getName() + 
-                " (new: " + wallet.balance + ")");
-        }
-    }
-
-    /**
-     * Note: For real balance, use LNService.getBalanceAsync() with player's admin key
-     * The cached balance here is just for quick reference
-     */
-
-    // ========================================================================
-    // Utility Methods
-    // ========================================================================
-
-    /**
-     * Format balance for display
-     */
-    public String formatBalance(long sats) {
-        if (sats >= 100_000_000) {
-            double btc = sats / 100_000_000.0;
-            return String.format("%.8f BTC", btc);
-        } else if (sats >= 1000) {
-            return String.format("%,d sats", sats);
-        } else {
-            return sats + " sats";
-        }
-    }
-
-    /**
-     * Get total number of registered wallets
-     */
     public int getWalletCount() {
         return playerWallets.size();
     }
 
-    /**
-     * Reload wallet data from disk
-     */
     public void reload() {
         playerWallets.clear();
-        loadWallets();
-        plugin.getDebugLogger().info("Wallet data reloaded");
+        lastBalanceFetch.clear();
+        if (walletFile != null && walletFile.exists()) {
+            this.walletConfig = YamlConfiguration.loadConfiguration(walletFile);
+            try {
+                loadWallets();
+            } catch (Exception e) {
+                plugin.getLogger().severe("Failed to reload wallets: " + e.getMessage());
+            }
+        }
     }
 
-    // ========================================================================
-    // Data Classes
-    // ========================================================================
+    public String formatBalance(long sats) {
+        if (sats >= 100_000_000) {
+            return String.format("%.8f BTC", sats / 100_000_000.0);
+        }
+        return String.format("%,d sats", sats);
+    }
 
-    /**
-     * Represents a player's LNbits wallet
-     */
+    // ================================================================
+    // Data structure
+    // ================================================================
+
     public static class PlayerWallet {
         public final String walletId;
         public final String adminKey;
         public final String invoiceKey;
         public final String walletName;
         public final long created;
-        public long balance; // Cached balance
-        
-        public PlayerWallet(String walletId, String adminKey, String invoiceKey, 
-                           String walletName, long created, long balance) {
+
+        public PlayerWallet(String walletId, String adminKey, String invoiceKey,
+                            String walletName, long created) {
             this.walletId = walletId;
             this.adminKey = adminKey;
             this.invoiceKey = invoiceKey;
             this.walletName = walletName;
             this.created = created;
-            this.balance = balance;
         }
     }
 }

@@ -1,20 +1,21 @@
 package com.crissuper20.lightning;
 
 import com.crissuper20.lightning.util.DebugLogger;
+import com.crissuper20.lightning.util.PluginMetrics;
+import com.crissuper20.lightning.util.RetryHelper;
 import com.crissuper20.lightning.managers.InvoiceMonitor;
 import com.crissuper20.lightning.managers.LNService;
 import com.crissuper20.lightning.managers.WalletManager;
-import com.crissuper20.lightning.commands.BalanceCommand;
-import com.crissuper20.lightning.commands.WalletCommand;
-import com.crissuper20.lightning.commands.InvoiceCommand;
-import com.crissuper20.lightning.commands.PayCommand;
-import com.crissuper20.lightning.clients.LNClient;
+import com.crissuper20.lightning.commands.*;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeoutException;
 
+/**
+ * Lightning Plugin for Minecraft - LNbits Backend only now
+ */
 public class LightningPlugin extends JavaPlugin {
 
     private static LightningPlugin instance;
@@ -22,6 +23,7 @@ public class LightningPlugin extends JavaPlugin {
     private LNService lnService;
     private WalletManager walletManager;
     private InvoiceMonitor invoiceMonitor;
+    private PluginMetrics metrics;
 
     @Override
     public void onEnable() {
@@ -35,29 +37,31 @@ public class LightningPlugin extends JavaPlugin {
         debugLogger = new DebugLogger(getLogger(), debug);
 
         debugLogger.info("Lightning Plugin starting up...");
-        debugLogger.info("beware, using real money is against Minecraft EULA");
+        debugLogger.info("Version: " + getDescription().getVersion());
+        debugLogger.info("Backend: LNbits");
+        debugLogger.info("testnet only!");
+
+        // Initialize metrics system
+        metrics = new PluginMetrics();
+        debugLogger.info("Metrics system initialized");
 
         // Validate configuration
         if (!validateConfig()) {
             getLogger().severe("==============================================");
             getLogger().severe("  PLUGIN DISABLED - INVALID CONFIGURATION");
             getLogger().severe("==============================================");
-            getLogger().severe("Please check config.yml for required fields.");
+            getLogger().severe("Please check config.yml for LNbits settings");
             getLogger().severe("==============================================");
             
             getServer().getPluginManager().disablePlugin(this);
             return;
         }
 
-        // Initialize Lightning service (factory creates appropriate client)
+        // Initialize Lightning service
         try {
             lnService = new LNService(this);
             debugLogger.info("LNService initialized successfully");
             debugLogger.info("Backend: " + lnService.getBackendName());
-            
-            // Initialize wallet manager
-            walletManager = new WalletManager(this);
-            debugLogger.info("WalletManager initialized successfully");
         } catch (Exception e) {
             getLogger().severe("Failed to initialize LNService: " + e.getMessage());
             e.printStackTrace();
@@ -65,30 +69,48 @@ public class LightningPlugin extends JavaPlugin {
             return;
         }
 
-        // Test connection to Lightning backend
+        // Initialize wallet manager
+        try {
+            walletManager = new WalletManager(this);
+            debugLogger.info("WalletManager initialized successfully");
+            
+            // IMPORTANT: Inject WalletManager into LNService
+            lnService.setWalletManager(walletManager);
+            debugLogger.info("WalletManager injected into LNService");
+        } catch (Exception e) {
+            getLogger().severe("Failed to initialize WalletManager: " + e.getMessage());
+            e.printStackTrace();
+            getServer().getPluginManager().disablePlugin(this);
+            return;
+        }
+
+        // Test connection to LNbits backend with retry
         if (!testConnection()) {
             getLogger().warning("==============================================");
-            getLogger().warning("  WARNING: Could not connect to backend");
+            getLogger().warning("  WARNING: Could not connect to LNbits");
             getLogger().warning("==============================================");
             getLogger().warning("Plugin will continue, but commands may fail.");
             getLogger().warning("Please verify:");
-            getLogger().warning("  - Backend instance is running");
-            getLogger().warning("  - Credentials are correct");
+            getLogger().warning("  - LNbits instance is running");
+            getLogger().warning("  - API key is correct");
             getLogger().warning("  - Network connectivity");
             
-            String backend = getConfig().getString("backend", "lnbits");
-            if (getConfig().getBoolean(backend + ".use_tor_proxy", false)) {
+            if (getConfig().getBoolean("lnbits.use_tor_proxy", false)) {
                 getLogger().warning("  - Tor proxy is running");
             }
             getLogger().warning("==============================================");
         }
+
+        // Initialize invoice monitor
         try {
-        invoiceMonitor = new InvoiceMonitor(this);
-        debugLogger.info("InvoiceMonitor initialized successfully");
+            invoiceMonitor = new InvoiceMonitor(this);
+            debugLogger.info("InvoiceMonitor initialized successfully");
         } catch (Exception e) {
-        getLogger().severe("Failed to initialize InvoiceMonitor: " + e.getMessage());
-        e.printStackTrace();
+            getLogger().severe("Failed to initialize InvoiceMonitor: " + e.getMessage());
+            e.printStackTrace();
+            // Don't disable plugin - monitor is optional
         }
+
         // Register commands
         registerCommands();
 
@@ -96,11 +118,35 @@ public class LightningPlugin extends JavaPlugin {
         registerEvents();
 
         debugLogger.info("Lightning Plugin enabled successfully!");
+        debugLogger.info("Wallets loaded: " + walletManager.getWalletCount());
+        debugLogger.info("Ready to process Lightning payments!");
     }
 
     @Override
     public void onDisable() {
         debugLogger.info("Lightning Plugin shutting down...");
+        
+        // Show final metrics
+        if (metrics != null) {
+            debugLogger.info("=== Final Statistics ===");
+            debugLogger.info("Uptime: " + metrics.getUptimeFormatted());
+            debugLogger.info("Invoices: " + metrics.getInvoicesCreated() + " created, " + 
+                           metrics.getInvoicesPaid() + " paid");
+            debugLogger.info("Payments: " + metrics.getPaymentsSuccessful() + "/" + 
+                           metrics.getPaymentsAttempted() + " successful");
+            debugLogger.info("Volume: ↓" + metrics.getTotalSatsDeposited() + " ↑" + 
+                           metrics.getTotalSatsWithdrawn() + " sats");
+        }
+        
+        // Shutdown components in reverse order
+        if (invoiceMonitor != null) {
+            try {
+                invoiceMonitor.shutdown();
+                debugLogger.info("InvoiceMonitor shutdown cleanly");
+            } catch (Exception e) {
+                getLogger().warning("Error during InvoiceMonitor shutdown: " + e.getMessage());
+            }
+        }
         
         if (lnService != null) {
             try {
@@ -110,102 +156,82 @@ public class LightningPlugin extends JavaPlugin {
                 getLogger().warning("Error during LNService shutdown: " + e.getMessage());
             }
         }
-         if (invoiceMonitor != null) {
+        
+        // Shutdown retry helper
         try {
-            invoiceMonitor.shutdown();
-            debugLogger.info("InvoiceMonitor shutdown cleanly");
+            RetryHelper.shutdown();
+            debugLogger.info("RetryHelper shutdown cleanly");
         } catch (Exception e) {
-            getLogger().warning("Error during InvoiceMonitor shutdown: " + e.getMessage());
+            getLogger().warning("Error during RetryHelper shutdown: " + e.getMessage());
         }
-        }
+        
         debugLogger.info("Lightning Plugin disabled.");
     }
 
     /**
-     * Validates that all required config fields are present
+     * Validates that all required LNbits config fields are present
      */
     private boolean validateConfig() {
-        String backend = getConfig().getString("backend", "lnbits").toLowerCase();
-
-        if (backend.equals("lnd")) {
-            return validateLNDConfig();
-        } else if (backend.equals("lnbits")) {
-            return validateLNbitsConfig();
-        } else {
-            getLogger().severe("Invalid backend: " + backend + ". Must be 'lnbits' or 'lnd'");
+        // Validate network setting
+        String network = getConfig().getString("network", "").toLowerCase();
+        if (network.equals("mainnet")) {
+            getLogger().severe("nice try.");
+            getLogger().severe("Change 'network' to 'testnet' or 'signet' in config.yml");
             return false;
         }
-    }
 
-    private boolean validateLNbitsConfig() {
+        // Validate LNbits configuration
         String host = getConfig().getString("lnbits.host", "");
         String apiKey = getConfig().getString("lnbits.api_key", "");
 
         if (host.isEmpty()) {
-            getLogger().severe("Missing required config: lnbits.host");
+            getLogger().severe("Missing required config: lnbits.host (We need a LNBits instance yknow)");
             return false;
         }
 
         if (apiKey.isEmpty()) {
-            getLogger().warning("==============================================");
-            getLogger().warning("  WARNING: No API key configured");
-            getLogger().warning("==============================================");
-            getLogger().warning("The plugin will work in read-only mode.");
-            getLogger().warning("Set lnbits.api_key in config.yml to enable");
-            getLogger().warning("full functionality.");
-            getLogger().warning("==============================================");
-        } else if (apiKey.length() < 10) {
-            getLogger().warning("API key appears invalid (too short)");
-        }
-
-        return true;
-    }
-
-    private boolean validateLNDConfig() {
-        String host = getConfig().getString("lnd.host", "");
-        int port = getConfig().getInt("lnd.port", 0);
-        String macaroonHex = getConfig().getString("lnd.macaroon_hex", "");
-        String macaroonPath = getConfig().getString("lnd.macaroon_path", "");
-
-        if (host.isEmpty()) {
-            getLogger().severe("Missing required config: lnd.host");
+            getLogger().severe("Missing required config: lnbits.api_key");
+            getLogger().severe("You left the API Key field empty");
             return false;
         }
-
-        if (port == 0) {
-            getLogger().severe("Missing required config: lnd.port");
-            return false;
-        }
-
-        if (macaroonHex.isEmpty() && macaroonPath.isEmpty()) {
-            getLogger().severe("Missing required config: lnd.macaroon_hex OR lnd.macaroon_path");
-            return false;
+        
+        if (apiKey.length() < 10) {
+            getLogger().warning("API key appears invalid (This is your first time running the plugin maybe?)");
         }
 
         return true;
     }
 
     /**
-     * Tests connection to Lightning backend
+     * Tests connection to LNbits backend with retry logic
      */
     private boolean testConnection() {
-        debugLogger.debug("Testing connection to backend...");
+        debugLogger.debug("Testing connection to LNbits...");
         
         try {
-            // Use async API with a short timeout to avoid hanging startup indefinitely.
-            LNClient.LNResponse<?> response = lnService.getWalletInfoAsync()
-                    .get(5, TimeUnit.SECONDS);
+            // Use retry helper for resilient connection test
+            RetryHelper.RetryConfig retryConfig = new RetryHelper.RetryConfig()
+                .maxAttempts(3)
+                .initialDelay(1000)
+                .backoff(2.0);
+            
+            // Use LNService.LNResponse instead of LNClient.LNResponse
+            LNService.LNResponse<?> response = retryConfig.execute(() -> 
+                lnService.getWalletInfoAsync()
+            ).get(15, TimeUnit.SECONDS);
 
             if (response.success) {
-                debugLogger.info("Successfully connected to " + lnService.getBackendName() + "!");
+                debugLogger.info("Successfully connected to LNbits!");
                 return true;
             } else {
                 getLogger().warning("Connection test failed: " + response.error);
+                metrics.recordApiError();
                 return false;
             }
         } catch (TimeoutException e) {
-            getLogger().warning("Connection test timed out (backend did not respond within 5s)");
+            getLogger().warning("Connection test timed out (backend did not respond within time)");
             debugLogger.error("Connection test timeout", e);
+            metrics.recordNetworkError();
             return false;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -215,44 +241,44 @@ public class LightningPlugin extends JavaPlugin {
         } catch (ExecutionException e) {
             getLogger().warning("Connection test failed: " + e.getCause().getMessage());
             debugLogger.error("Connection test execution error", e.getCause());
+            metrics.recordNetworkError();
             return false;
         } catch (Exception e) {
             getLogger().warning("Connection test failed: " + e.getMessage());
             debugLogger.error("Connection test unexpected error", e);
+            metrics.recordError("connection_test", e.getMessage());
             return false;
         }
     }
 
     private void registerCommands() {
         try {
-            if (getCommand("pay") != null) {
-            getCommand("pay").setExecutor(new PayCommand(this));
-            debugLogger.info("Registered /pay command");
-        } else {
-            getLogger().warning("Could not register /pay - command not found in plugin.yml");
-        }
             if (getCommand("balance") != null) {
                 getCommand("balance").setExecutor(new BalanceCommand(this));
                 debugLogger.info("Registered /balance command");
-            } else {
-                getLogger().warning("Could not register /balance - command not found in plugin.yml");
             }
             
             if (getCommand("wallet") != null) {
                 getCommand("wallet").setExecutor(new WalletCommand(this, walletManager));
                 debugLogger.info("Registered /wallet command");
-            } else {
-                getLogger().warning("Could not register /wallet - command not found in plugin.yml");
             }
             
             if (getCommand("invoice") != null) {
                 getCommand("invoice").setExecutor(new InvoiceCommand(this));
                 debugLogger.info("Registered /invoice command");
-            } else {
-                getLogger().warning("Could not register /invoice - command not found in plugin.yml");
             }
-
-            // Add more commands later: /pay, etc.
+            
+            if (getCommand("pay") != null) {
+                getCommand("pay").setExecutor(new PayCommand(this));
+                debugLogger.info("Registered /pay command");
+            }
+            
+            if (getCommand("lnadmin") != null) {
+                AdminCommand adminCmd = new AdminCommand(this, metrics);
+                getCommand("lnadmin").setExecutor(adminCmd);
+                getCommand("lnadmin").setTabCompleter(adminCmd);
+                debugLogger.info("Registered /lnadmin command");
+            }
         } catch (Exception e) {
             getLogger().severe("Error registering commands: " + e.getMessage());
             debugLogger.error("Command registration error", e);
@@ -260,11 +286,14 @@ public class LightningPlugin extends JavaPlugin {
     }
 
     private void registerEvents() {
-        // Example: getServer().getPluginManager().registerEvents(new PlayerJoinListener(), this);
+        // Future: Listen for player join/quit to sync balances
         debugLogger.debug("Event listeners ready (none registered yet)");
     }
 
+    // ================================================================
     // Getters
+    // ================================================================
+
     public static LightningPlugin getInstance() {
         return instance;
     }
@@ -280,23 +309,34 @@ public class LightningPlugin extends JavaPlugin {
     public WalletManager getWalletManager() {
         return walletManager;
     }
-     public InvoiceMonitor getInvoiceMonitor() {
-    return invoiceMonitor;
-  }
-
-    /**
-     * Sends a formatted message to a player/console
-     */
-    public static String formatMessage(String message) {
-        return message;
-    }
-
-    public static String formatError(String message) {
-        return message;
-    }
-
-    public static String formatSuccess(String message) {
-        return message;
+    
+    public InvoiceMonitor getInvoiceMonitor() {
+        return invoiceMonitor;
     }
     
+    public PluginMetrics getMetrics() {
+        return metrics;
+    }
+
+    // ================================================================
+    // Message formatting helpers 
+    // ================================================================
+
+    public String formatMessage(String message) {
+        String prefix = getConfig().getString("messages.prefix", "§8[§eLN§8]§r ");
+        return prefix + message;
+    }
+
+    public String formatError(String message) {
+        return formatMessage("§c" + message);
+    }
+
+    public String formatSuccess(String message) {
+        return formatMessage("§a" + message);
+    }
+    
+    // Static helper for when you don't have plugin instance
+    public static String simpleFormat(String message) {
+        return "§8[§eln§8]§r " + message;
+    }
 }
