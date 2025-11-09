@@ -39,9 +39,8 @@ public class LNService {
         plugin.getDebugLogger().info("Initializing Lightning Service...");
 
         try {
-            // Validate and check mainnet
             validateConfiguration();
-            checkMainnetAndAbort();
+            // Network check removed 
             
             // Read configuration
             String host = plugin.getConfig().getString("lnbits.host");
@@ -165,21 +164,6 @@ public class LNService {
         }
 
         plugin.getDebugLogger().debug("Configuration validation successful");
-    }
-
-    private void checkMainnetAndAbort() {
-        String globalNet = plugin.getConfig().getString("network", "").trim();
-        String backendNet = plugin.getConfig().getString("lnbits.network", "").trim();
-
-        boolean isMainnet = "mainnet".equalsIgnoreCase(globalNet) || "mainnet".equalsIgnoreCase(backendNet);
-        if (isMainnet) {
-            String msg = "MAINNET USE BLOCKED: plugin not allowed on mainnet (EULA compliance)";
-            plugin.getLogger().severe("=".repeat(60));
-            plugin.getLogger().severe(msg);
-            plugin.getLogger().severe("=".repeat(60));
-            plugin.getServer().getPluginManager().disablePlugin(plugin);
-            throw new IllegalStateException(msg);
-        }
     }
 
     // ========================================================================
@@ -365,14 +349,16 @@ public class LNService {
     }
 
     // ========================================================================
-    // Core LNbits API Methods (with key parameter)
+    // Core LNbits API Methods (with key parameter) - FIXED
     // ========================================================================
 
     private CompletableFuture<LNResponse<Invoice>> createInvoiceAsync(long amountSats, String memo, String key) {
         JsonObject body = new JsonObject();
-        body.addProperty("out", false);
+        body.addProperty("out", false);  // Incoming payment
         body.addProperty("amount", amountSats);
         body.addProperty("memo", memo);
+        
+        plugin.getDebugLogger().debug("Creating invoice: " + body.toString());
         
         return sendPost("/payments", key, body)
             .thenApply(resp -> {
@@ -396,10 +382,33 @@ public class LNService {
             });
     }
 
+    /**
+     * FIXED: Pay an invoice with correct LNbits API format
+     */
     private CompletableFuture<LNResponse<JsonObject>> payInvoiceAsync(String bolt11, String key) {
         JsonObject body = new JsonObject();
+        
+        // CRITICAL FIX: LNbits requires "out": true for outgoing payments
+        body.addProperty("out", true);
         body.addProperty("bolt11", bolt11);
-        return sendPost("/payments", key, body);
+        
+        plugin.getDebugLogger().info("=== Sending Payment ===");
+        plugin.getDebugLogger().info("Request body: " + body.toString());
+        plugin.getDebugLogger().info("API Key (first 8): " + key.substring(0, 8) + "...");
+        plugin.getDebugLogger().info("Bolt11 prefix: " + bolt11.substring(0, Math.min(20, bolt11.length())));
+        
+        return sendPost("/payments", key, body)
+            .thenApply(resp -> {
+                plugin.getDebugLogger().info("=== Payment Response ===");
+                plugin.getDebugLogger().info("Success: " + resp.success);
+                plugin.getDebugLogger().info("Status: " + resp.statusCode);
+                if (resp.success) {
+                    plugin.getDebugLogger().info("Response data: " + resp.data.toString());
+                } else {
+                    plugin.getDebugLogger().error("Error: " + resp.error);
+                }
+                return resp;
+            });
     }
 
     // ========================================================================

@@ -1,7 +1,6 @@
 package com.crissuper20.lightning.commands;
 
 import com.crissuper20.lightning.LightningPlugin;
-import com.crissuper20.lightning.managers.LNService;
 import com.crissuper20.lightning.managers.WalletManager;
 import com.crissuper20.lightning.util.RateLimiter;
 import org.bukkit.Bukkit;
@@ -22,13 +21,11 @@ import org.bukkit.entity.Player;
 public class BalanceCommand implements CommandExecutor {
 
     private final LightningPlugin plugin;
-    private final LNService lnService;
     private final WalletManager walletManager;
     private final RateLimiter rateLimiter;
 
     public BalanceCommand(LightningPlugin plugin) {
         this.plugin = plugin;
-        this.lnService = plugin.getLnService();
         this.walletManager = plugin.getWalletManager();
         
         // Rate limit: 20 balance checks per minute

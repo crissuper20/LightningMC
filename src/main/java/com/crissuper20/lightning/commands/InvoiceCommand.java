@@ -1,10 +1,16 @@
 package com.crissuper20.lightning.commands;
 
 import com.crissuper20.lightning.LightningPlugin;
-import com.crissuper20.lightning.managers.InvoiceMonitor;
+import com.crissuper20.lightning.managers.WebSocketInvoiceMonitor;
 import com.crissuper20.lightning.managers.LNService;
 import com.crissuper20.lightning.managers.WalletManager;
 import com.crissuper20.lightning.util.RateLimiter;
+import com.crissuper20.lightning.util.QRMapGenerator;
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.event.ClickEvent;
+import net.kyori.adventure.text.event.HoverEvent;
+import net.kyori.adventure.text.format.NamedTextColor;
+import net.kyori.adventure.text.format.TextDecoration;
 import org.bukkit.Bukkit;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
@@ -19,14 +25,16 @@ import org.bukkit.entity.Player;
  * - Metrics tracking
  * - Transaction limits
  * - Better error handling
- * - QR code generation (future)
+ * - QR code generation
+ * - Clickable copy button (Adventure API)
+ * - WebSocket-based real-time payment notifications
  */
 public class InvoiceCommand implements CommandExecutor {
 
     private final LightningPlugin plugin;
     private final LNService lnService;
     private final WalletManager walletManager;
-    private final InvoiceMonitor invoiceMonitor;
+    private final WebSocketInvoiceMonitor invoiceMonitor;
     private final RateLimiter rateLimiter;
 
     public InvoiceCommand(LightningPlugin plugin) {
@@ -148,7 +156,7 @@ public class InvoiceCommand implements CommandExecutor {
     }
 
     /**
-     * Create and track a Lightning invoice
+     * Create and track a Lightning invoice (with WebSocket monitoring)
      */
     private void createInvoice(Player player, long amountSats, String memo) {
         try (var timer = plugin.getMetrics().startTiming("invoice_create")) {
@@ -192,9 +200,11 @@ public class InvoiceCommand implements CommandExecutor {
         // Record metrics
         plugin.getMetrics().recordInvoiceCreated(player.getUniqueId(), amountSats);
 
-        // Start monitoring
+        // Start WebSocket monitoring for real-time notifications
         if (invoiceMonitor != null) {
             invoiceMonitor.trackInvoice(player, invoice.paymentHash, amountSats, memo);
+            plugin.getDebugLogger().debug("Invoice " + invoice.paymentHash + 
+                " now being monitored via WebSocket");
         }
 
         // Display invoice to player
@@ -202,10 +212,10 @@ public class InvoiceCommand implements CommandExecutor {
     }
 
     /**
-     * Display invoice details to player
+     * Display invoice details to player with QR code map and clickable copy button
      */
     private void displayInvoice(Player player, LNService.Invoice invoice, long amountSats, String memo) {
-        player.sendMessage("§a§l INVOICE CREATED");
+        player.sendMessage("§a§l⚡ INVOICE CREATED!");
         player.sendMessage("");
         player.sendMessage("§eAmount: §f" + formatSats(amountSats));
         
@@ -214,19 +224,65 @@ public class InvoiceCommand implements CommandExecutor {
         }
         
         player.sendMessage("");
-        player.sendMessage("§7Scan QR or copy invoice:");
+        player.sendMessage("§7Generating QR code map...");
         
-        player.sendMessage("§f" + invoice.bolt11);
+        // Generate QR code map
+        try {
+            boolean qrSuccess = QRMapGenerator.giveMap(player, invoice.bolt11);
+            
+            if (qrSuccess) {
+                player.sendMessage("§a✓ QR code map added to inventory!");
+                plugin.getDebugLogger().debug("QR map generated for invoice: " + invoice.paymentHash);
+            } else {
+                player.sendMessage("§c✗ Failed to generate QR code map");
+                plugin.getDebugLogger().warning("QR generation failed for " + player.getName());
+            }
+        } catch (Exception e) {
+            player.sendMessage("§c✗ Error generating QR code");
+            plugin.getDebugLogger().error("QR generation error for " + player.getName(), e);
+        }
         
+        player.sendMessage("");
+        player.sendMessage("§7Invoice (click to copy):");
+        
+        // Create clickable copy button using Adventure API
+        Component invoiceComponent = Component.text()
+            .append(Component.text("[Copy Invoice]", NamedTextColor.GREEN)
+                .decorate(TextDecoration.BOLD)
+                .clickEvent(ClickEvent.copyToClipboard(invoice.bolt11))
+                .hoverEvent(HoverEvent.showText(
+                    Component.text("Click to copy invoice to clipboard", NamedTextColor.GRAY)
+                ))
+            )
+            .build();
+        
+        player.sendMessage(invoiceComponent);
+        
+        // Also show the invoice text for manual copying
+        player.sendMessage("");
+        player.sendMessage("§8" + truncateInvoice(invoice.bolt11));
         player.sendMessage("");
         player.sendMessage("§7Payment Hash:");
         player.sendMessage("§8" + invoice.paymentHash.substring(0, 32) + "...");
-        
         player.sendMessage("");
-        player.sendMessage("§7You'll be notified when paid!");
+        player.sendMessage("§a⚡ You'll be notified instantly when paid!");
+        player.sendMessage("§7(Real-time WebSocket monitoring enabled)");
         
         plugin.getDebugLogger().info("Created invoice for " + player.getName() + ": " + 
                                     amountSats + " sats, hash=" + invoice.paymentHash);
+    }
+
+    /**
+     * Truncate invoice for display (show first and last parts)
+     */
+    private String truncateInvoice(String invoice) {
+        if (invoice.length() <= 80) {
+            return invoice;
+        }
+        
+        String start = invoice.substring(0, 40);
+        String end = invoice.substring(invoice.length() - 40);
+        return start + "..." + end;
     }
 
     private String formatSats(long sats) {

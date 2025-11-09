@@ -3,7 +3,7 @@ package com.crissuper20.lightning;
 import com.crissuper20.lightning.util.DebugLogger;
 import com.crissuper20.lightning.util.PluginMetrics;
 import com.crissuper20.lightning.util.RetryHelper;
-import com.crissuper20.lightning.managers.InvoiceMonitor;
+import com.crissuper20.lightning.managers.WebSocketInvoiceMonitor;
 import com.crissuper20.lightning.managers.LNService;
 import com.crissuper20.lightning.managers.WalletManager;
 import com.crissuper20.lightning.commands.*;
@@ -14,7 +14,9 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeoutException;
 
 /**
- * Lightning Plugin for Minecraft - LNbits Backend only now
+ * Lightning Plugin for Minecraft - LNbits Backend with WebSocket support
+ * 
+ * Mainnet validation removed - FakeWallet extension handles testnet simulation
  */
 public class LightningPlugin extends JavaPlugin {
 
@@ -22,7 +24,7 @@ public class LightningPlugin extends JavaPlugin {
     private DebugLogger debugLogger;
     private LNService lnService;
     private WalletManager walletManager;
-    private InvoiceMonitor invoiceMonitor;
+    private WebSocketInvoiceMonitor invoiceMonitor;
     private PluginMetrics metrics;
 
     @Override
@@ -38,8 +40,8 @@ public class LightningPlugin extends JavaPlugin {
 
         debugLogger.info("Lightning Plugin starting up...");
         debugLogger.info("Version: " + getDescription().getVersion());
-        debugLogger.info("Backend: LNbits");
-        debugLogger.info("testnet only!");
+        debugLogger.info("Backend: LNbits (WebSocket)");
+        debugLogger.info("Note: Use FakeWallet extension for testnet simulation");
 
         // Initialize metrics system
         metrics = new PluginMetrics();
@@ -103,10 +105,11 @@ public class LightningPlugin extends JavaPlugin {
 
         // Initialize invoice monitor
         try {
-            invoiceMonitor = new InvoiceMonitor(this);
-            debugLogger.info("InvoiceMonitor initialized successfully");
+            invoiceMonitor = new WebSocketInvoiceMonitor(this);
+            debugLogger.info("WebSocketInvoiceMonitor initialized successfully");
+            debugLogger.info("Real-time payment notifications enabled!");
         } catch (Exception e) {
-            getLogger().severe("Failed to initialize InvoiceMonitor: " + e.getMessage());
+            getLogger().severe("Failed to initialize WebSocketInvoiceMonitor: " + e.getMessage());
             e.printStackTrace();
             // Don't disable plugin - monitor is optional
         }
@@ -142,9 +145,9 @@ public class LightningPlugin extends JavaPlugin {
         if (invoiceMonitor != null) {
             try {
                 invoiceMonitor.shutdown();
-                debugLogger.info("InvoiceMonitor shutdown cleanly");
+                debugLogger.info("WebSocketInvoiceMonitor shutdown cleanly");
             } catch (Exception e) {
-                getLogger().warning("Error during InvoiceMonitor shutdown: " + e.getMessage());
+                getLogger().warning("Error during WebSocketInvoiceMonitor shutdown: " + e.getMessage());
             }
         }
         
@@ -169,34 +172,25 @@ public class LightningPlugin extends JavaPlugin {
     }
 
     /**
-     * Validates that all required LNbits config fields are present
+     * Validates required LNbits config fields
+     * Network checking removed - FakeWallet handles testnet simulation
      */
     private boolean validateConfig() {
-        // Validate network setting
-        String network = getConfig().getString("network", "").toLowerCase();
-        if (network.equals("mainnet")) {
-            getLogger().severe("nice try.");
-            getLogger().severe("Change 'network' to 'testnet' or 'signet' in config.yml");
-            return false;
-        }
-
-        // Validate LNbits configuration
         String host = getConfig().getString("lnbits.host", "");
         String apiKey = getConfig().getString("lnbits.api_key", "");
 
         if (host.isEmpty()) {
-            getLogger().severe("Missing required config: lnbits.host (We need a LNBits instance yknow)");
+            getLogger().severe("Missing required config: lnbits.host");
             return false;
         }
 
         if (apiKey.isEmpty()) {
             getLogger().severe("Missing required config: lnbits.api_key");
-            getLogger().severe("You left the API Key field empty");
             return false;
         }
         
         if (apiKey.length() < 10) {
-            getLogger().warning("API key appears invalid (This is your first time running the plugin maybe?)");
+            getLogger().warning("API key appears invalid (too short)");
         }
 
         return true;
@@ -229,7 +223,7 @@ public class LightningPlugin extends JavaPlugin {
                 return false;
             }
         } catch (TimeoutException e) {
-            getLogger().warning("Connection test timed out (backend did not respond within time)");
+            getLogger().warning("Connection test timed out");
             debugLogger.error("Connection test timeout", e);
             metrics.recordNetworkError();
             return false;
@@ -286,7 +280,6 @@ public class LightningPlugin extends JavaPlugin {
     }
 
     private void registerEvents() {
-        // Future: Listen for player join/quit to sync balances
         debugLogger.debug("Event listeners ready (none registered yet)");
     }
 
@@ -310,7 +303,7 @@ public class LightningPlugin extends JavaPlugin {
         return walletManager;
     }
     
-    public InvoiceMonitor getInvoiceMonitor() {
+    public WebSocketInvoiceMonitor getInvoiceMonitor() {
         return invoiceMonitor;
     }
     
