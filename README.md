@@ -2,7 +2,7 @@
 
 > Bitcoin Lightning Network payments in Minecraft
 
-Integrate the Lightning Network as your Minecraft server's economy. Create and pay Lightning invoices directly in-game using real Bitcoin.
+Integrate the Lightning Network as your Minecraft server's economy. Create and pay Lightning invoices directly in-game
 
 ![Minecraft](https://img.shields.io/badge/Minecraft-1.16+-brightgreen)
 ![Status](https://img.shields.io/badge/status-development-yellow)
@@ -60,7 +60,7 @@ The compiled `.jar` will be in `build/libs/`
 
 **Example:**
 ```
-/invoice 1000 Pizza money
+/invoice 1000 memo
 ```
 
 ## Key Config Options
