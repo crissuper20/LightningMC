@@ -14,9 +14,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeoutException;
 
 /**
- * Lightning Plugin for Minecraft - LNbits Backend with WebSocket support
- * 
- * Mainnet validation removed - FakeWallet extension handles testnet simulation
+ * Lightning Plugin for Minecraft 
  */
 public class LightningPlugin extends JavaPlugin {
 
@@ -26,6 +24,9 @@ public class LightningPlugin extends JavaPlugin {
     private WalletManager walletManager;
     private WebSocketInvoiceMonitor invoiceMonitor;
     private PluginMetrics metrics;
+    
+    // Command references
+    private SplitInvoiceCommand splitInvoiceCommand;
 
     @Override
     public void onEnable() {
@@ -40,8 +41,6 @@ public class LightningPlugin extends JavaPlugin {
 
         debugLogger.info("Lightning Plugin starting up...");
         debugLogger.info("Version: " + getDescription().getVersion());
-        debugLogger.info("Backend: LNbits (WebSocket)");
-        debugLogger.info("Note: Use FakeWallet extension for testnet simulation");
 
         // Initialize metrics system
         metrics = new PluginMetrics();
@@ -173,7 +172,6 @@ public class LightningPlugin extends JavaPlugin {
 
     /**
      * Validates required LNbits config fields
-     * Network checking removed - FakeWallet handles testnet simulation
      */
     private boolean validateConfig() {
         String host = getConfig().getString("lnbits.host", "");
@@ -209,7 +207,6 @@ public class LightningPlugin extends JavaPlugin {
                 .initialDelay(1000)
                 .backoff(2.0);
             
-            // Use LNService.LNResponse instead of LNClient.LNResponse
             LNService.LNResponse<?> response = retryConfig.execute(() -> 
                 lnService.getWalletInfoAsync()
             ).get(15, TimeUnit.SECONDS);
@@ -267,6 +264,12 @@ public class LightningPlugin extends JavaPlugin {
                 debugLogger.info("Registered /pay command");
             }
             
+            if (getCommand("splitinvoice") != null) {
+                splitInvoiceCommand = new SplitInvoiceCommand(this);
+                getCommand("splitinvoice").setExecutor(splitInvoiceCommand);
+                debugLogger.info("Registered /splitinvoice command");
+            }
+            
             if (getCommand("lnadmin") != null) {
                 AdminCommand adminCmd = new AdminCommand(this, metrics);
                 getCommand("lnadmin").setExecutor(adminCmd);
@@ -309,6 +312,10 @@ public class LightningPlugin extends JavaPlugin {
     
     public PluginMetrics getMetrics() {
         return metrics;
+    }
+    
+    public SplitInvoiceCommand getSplitInvoiceCommand() {
+        return splitInvoiceCommand;
     }
 
     // ================================================================

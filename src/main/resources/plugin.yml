@@ -18,13 +18,19 @@ commands:
     usage: /<command> <bolt11>
     permission: lightning.pay
   invoice:
-    description: Create an invoice (stub)
+    description: Create an invoice, returns bolt11
     usage: /<command> <amount>
     permission: lightning.invoice
   wallet:
     description: View or create your Lightning wallet
     usage: /<command>
     permission: lightning.wallet
+  splitinvoice:
+    description: Create split payment invoices
+    usage: /<command> [confirm]
+    aliases: [splitpay]
+    permission: lightning.splitinvoice
+    permission-message: You don't have permission to create split invoices
 permissions:
   lightning.balance:
     description: Allows using /balance
@@ -41,3 +47,6 @@ permissions:
   lightning.admin:
     description: Allows using /lnadmin
     default: op
+  lightning.splitinvoice:
+    description: Create split payment invoices
+    default: true

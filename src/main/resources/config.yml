@@ -1,78 +1,59 @@
-# ================================================
-# Lightning Plugin Configuration
-# ================================================
 
-# Enable debug logging
-debug: false
 
-# Network type (testnet/signet)
-network: testnet
+# Debug mode - enables detailed API logging (tcpdump-style)
+# Shows ALL request/response details for troubleshooting
+debug: true
 
-# ================================================
-# LNbits Configuration
-# ================================================
+# LNbits Backend Configuration
 lnbits:
-  # LNbits instance URL (without /api)
-  host: "changeme"
-  
-  # Use HTTPS (recommended)
+  # LNbits instance URL (without https://)
+  host: ""
   use_https: true
   
-  # Admin API key (required for creating player wallets)
-  # Get this from your LNbits admin wallet
-  api_key: "changeme"
+  # Admin API key (from your LNbits admin wallet)
+  # This key is used to create player wallets
+  api_key: "your-admin-key-here"
   
-  # Tor configuration (for .onion hosts)
+  # Tor proxy support (for .onion addresses)
   use_tor_proxy: false
   tor_proxy_host: "127.0.0.1"
   tor_proxy_port: 9050
   
-  # Skip TLS verification (only for development with self-signed certs)
+  # Skip TLS verification (for self-signed certificates)
+  # WARNING: Only use for testing!
   skip_tls_verify: false
 
-# ================================================
-# WebSocket Configuration (NEW!)
-# ================================================
+# WebSocket Invoice Monitoring
 websocket:
   # Maximum reconnection attempts before giving up
   max_reconnect_attempts: 5
   
-  # Initial delay before first reconnection attempt (milliseconds)
+  # Initial delay between reconnection attempts (milliseconds)
   reconnect_initial_delay_ms: 1000
   
-  # Backoff multiplier for exponential reconnection delay
-  # (delay = initial_delay * backoff^attempt_number)
+  # Backoff multiplier for reconnection delays
   reconnect_backoff_multiplier: 2.0
 
-# ================================================
 # Invoice Monitor Settings
-# ================================================
 invoice_monitor:
-  # When to expire unpaid invoices (minutes)
+  # How long to keep tracking unpaid invoices (minutes)
   expiry_minutes: 60
-  
-  # Legacy polling settings (kept for backward compatibility, not used with WebSocket)
-  # check_interval_seconds: 3
-  # fast_check_seconds: 3
-  # slow_check_seconds: 15
-  # slow_check_threshold_minutes: 10
 
-# ================================================
-# Rate Limiting 
-# ================================================
+# Rate Limiting (per player, per minute)
 rate_limits:
-  # Invoice creation limits (per player)
+  # Balance checks
+  balance_checks_per_minute: 20
+  
+  # Invoice creation
   invoices_per_minute: 5
   
-  # Payment limits (per player)
+  # Payments
   payments_per_minute: 10
   
-  # Balance check limits (per player)
-  balance_checks_per_minute: 20
+  # Split payments
+  split_payments_per_minute: 5
 
-# ================================================
 # Transaction Limits
-# ================================================
 limits:
   # Minimum invoice amount (sats)
   min_invoice_amount: 1
@@ -80,62 +61,24 @@ limits:
   # Maximum invoice amount (sats)
   max_invoice_amount: 1000000
   
-  # Minimum payment amount (sats)
-  min_payment_amount: 1
-  
-  # Maximum payment amount (sats)
-  max_payment_amount: 1000000
-  
-  # Maximum wallet balance (sats, 0 = no limit)
+  # Maximum wallet balance (0 = no limit)
   max_wallet_balance: 0
 
-# ================================================
-# Wallet Encryption
-# ================================================
-wallet_encryption:
-  # Encryption password (auto-generated on first run)
-  password: ""
-
-# Server UUID (auto-generated on first run)
-server_uuid: ""
-
-# ================================================
-# Network & Retry Configuration
-# ================================================
-network:
-  # Maximum retry attempts for failed operations
-  max_retries: 3
+# Split Payments
+split_payments:
+  # Server commission wallet UUID (for marketplace features)
+  # Leave empty to disable server commission
+  server_wallet_uuid: ""
   
-  # Initial retry delay (milliseconds)
-  retry_delay_ms: 1000
-  
-  # Backoff multiplier for exponential retry
-  retry_backoff: 2.0
-  
-  # Request timeout (seconds)
-  timeout_seconds: 15
+  # Default commission percentage (0-100)
+  default_commission_percent: 0
 
-# ================================================
-# Permissions
-# ================================================
-# Defined in your server's permissions plugin:
-#   lightning.use - Basic usage (create invoices, check balance)
-#   lightning.pay - Send payments
-#   lightning.admin - Admin commands
+# LNDHub Integration (for Zeus wallet)
+give_user_lndhub: true
 
-# ================================================
-# Messages (Customizable)
-# ================================================
+# LNDHub address (optional, defaults to lnbits.host)
+lndhub_address: ""
+lndhud_use_https: true
+# Message Formatting
 messages:
   prefix: "§8[§eLN§8]§r "
-  invoice_created: "§a Invoice created! You'll be notified instantly when paid."
-  invoice_paid: "§a§l INVOICE PAID! §r§7Balance updated."
-  invoice_expired: "§c Your invoice has expired. Create a new one."
-  payment_success: "§a Payment sent successfully!"
-  payment_failed: "§c✗Payment failed: {reason}"
-  insufficient_balance: "§c Insufficient balance. You have {balance} sats, need {amount} sats."
-  rate_limited: "§c Rate Limited! Please wait {time} before trying again."
-  no_wallet: "§7You don't have a wallet yet. One will be created automatically."
-  wallet_created: "§a Wallet created successfully!"
-
-pending_notifications: {}

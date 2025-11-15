@@ -265,8 +265,7 @@ public class InvoiceCommand implements CommandExecutor {
         player.sendMessage("§7Payment Hash:");
         player.sendMessage("§8" + invoice.paymentHash.substring(0, 32) + "...");
         player.sendMessage("");
-        player.sendMessage("§a⚡ You'll be notified instantly when paid!");
-        player.sendMessage("§7(Real-time WebSocket monitoring enabled)");
+        player.sendMessage("§a You'll be notified instantly when paid!");
         
         plugin.getDebugLogger().info("Created invoice for " + player.getName() + ": " + 
                                     amountSats + " sats, hash=" + invoice.paymentHash);

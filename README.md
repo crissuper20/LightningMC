@@ -2,7 +2,7 @@
 
 > Bitcoin Lightning Network payments in Minecraft
 
-A Minecraft plugin that integrates the Lightning Network as an economy system. Create and pay Lightning invoices directly from your Minecraft server
+Integrate the Lightning Network as your Minecraft server's economy. Create and pay Lightning invoices directly in-game using real Bitcoin.
 
 ![Minecraft](https://img.shields.io/badge/Minecraft-1.16+-brightgreen)
 ![Status](https://img.shields.io/badge/status-development-yellow)
@@ -10,18 +10,17 @@ A Minecraft plugin that integrates the Lightning Network as an economy system. C
 
 ## Features
 
-- **Lightning Wallets** - Automatic wallet creation for each player
-- **QR Code Invoices** - Generate scannable payment QR codes on in-game maps
-- **Real Bitcoin** - Use actual Lightning Network payments (testnet/mainnet)
-- **Tor Support** - Connect via Tor for privacy
-- **Configurable** - Rate limits, transaction limits, and monitoring settings
+- **Auto Wallets** - Every player gets their own Lightning wallet
+- **QR Invoices** - Scannable QR codes rendered on in-game maps
+- **Real Bitcoin** - Actual Lightning payments (testnet/mainnet)
+- **Tor Support** - Privacy-focused connections
+- **LNDHub** - For wallet integration
 
 ## Quick Start
 
-1. Download the latest `.jar` from [Releases](../../releases)
-2. Drop it in your `plugins/` folder
-3. Edit `plugins/LightningMC/config.yml` with your LNbits credentials
-4. Restart your server
+1. Download latest `.jar` from [Releases](../../releases)
+2. Place in `plugins/` folder
+3. Configure `plugins/LightningMC/config.yml`:
 
 ```yaml
 lnbits:
@@ -29,53 +28,76 @@ lnbits:
   api_key: "your_admin_key_here"
 ```
 
+4. Start server
+
+## Building from Source
+
+```bash
+# Clone the repository
+git clone https://github.com/yourusername/LightningMC.git
+cd LightningMC
+
+# Linux/Mac
+chmod +x ./gradlew
+./gradlew build
+
+# Windows
+gradlew.bat build
+```
+
+The compiled `.jar` will be in `build/libs/`
+
 ## Commands
 
-| Command | Description | Permission |
-|---------|-------------|------------|
-| `/wallet` | View/create your wallet | `lightning.wallet` |
-| `/balance` | Check your balance | `lightning.balance` |
-| `/invoice <amount> <memo>` | Create invoice with QR code | `lightning.invoice` |
-| `/pay <bolt11>` | Pay a Lightning invoice | `lightning.pay` |
-| `/lnadmin` | Admin tools | `lightning.admin` |
+| Command | Description |
+|---------|-------------|
+| `/wallet` | View/create your Lightning wallet |
+| `/balance` | Check your balance |
+| `/invoice <amount> [memo]` | Create invoice with QR code |
+| `/pay <bolt11>` | Pay a Lightning invoice |
+| `/splitinvoice` | Create split payment invoices |
+| `/lnadmin` | Admin controls (op only) |
 
 **Example:**
 ```
-/invoice 100 memo text
+/invoice 1000 Pizza money
 ```
-(i dont actually know what versions are actually working, i will test and put it back soon)
-Minimum: **Minecraft 1.16** (api-version: 1.16)
 
-## Configuration Highlights
+## Key Config Options
 
 ```yaml
-# Invoice monitoring
-invoice_monitor:
-  check_interval_seconds: 3
-  expiry_minutes: 60
-
-# Rate limits
+# Rate limits (per player/minute)
 rate_limits:
   invoices_per_minute: 5
   payments_per_minute: 10
 
-# Transaction limits
+# Transaction limits (sats)
 limits:
   min_invoice_amount: 1
   max_invoice_amount: 1000000
+
+# Split payments marketplace
+split_payments:
+  server_wallet_uuid: ""
+  default_commission_percent: 0
+
+# LNDHub (Zeus wallet)
+give_user_lndhub: true
 ```
+
+## Requirements
+
+- **Minecraft:** 1.16+
+- **LNbits:** Instance with admin API key
 
 ## Contributing
 
-Please contribute if you want!
+Contributions welcome! Open an issue or PR ps
 
 ## License
 
-MIT License 
-
-## Credits
-
-Built with [LNbits](https://lnbits.com/) • [ZXing](https://github.com/zxing/zxing) 
+MIT License
 
 ---
 
+**Built with** [LNbits](https://lnbits.com) • [ZXing](https://github.com/zxing/zxing)
