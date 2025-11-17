@@ -34,7 +34,7 @@ lnbits:
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/LightningMC.git
+git clone https://github.com/crissuper20/LightningMC.git
 cd LightningMC
 
 # Linux/Mac
