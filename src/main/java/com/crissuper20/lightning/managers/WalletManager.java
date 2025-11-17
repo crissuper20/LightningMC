@@ -1,333 +1,223 @@
 package com.crissuper20.lightning.managers;
 
 import com.crissuper20.lightning.LightningPlugin;
-import com.google.gson.*;
-import org.bukkit.configuration.file.FileConfiguration;
-import org.bukkit.configuration.file.YamlConfiguration;
+import com.crissuper20.lightning.util.DebugLogger;
+import com.google.gson.JsonObject;
 import org.bukkit.entity.Player;
 
 import java.io.File;
-import java.io.IOException;
+import java.io.FileReader;
+import java.io.FileWriter;
 import java.net.URI;
-import java.net.http.*;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.time.Duration;
-import java.util.*;
+import java.util.Collections;
+import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 
-/**
- * WalletManager - manages per-player LNbits wallets
- * 
- * FIXED: Removed unnecessary balance caching and fetching
- */
 public class WalletManager {
 
     private final LightningPlugin plugin;
-    private final HttpClient httpClient;
-
-    private final String apiBase;
-    private final String adminKey;
-
     private final File walletFile;
-    private FileConfiguration walletConfig;
-    private final Map<UUID, PlayerWallet> playerWallets;
+    private final Map<String, WalletData> wallets = new ConcurrentHashMap<>();
+    private final Map<String, String> walletOwnerLookup = new ConcurrentHashMap<>();
+    private final HttpClient httpClient;
+    private final String lnbitsBaseUrl;
+    private final String masterAdminKey;
+    private final DebugLogger debug;
+    private volatile WebSocketInvoiceMonitor invoiceMonitor;
 
-    public WalletManager(LightningPlugin plugin) throws Exception {
+    public WalletManager(LightningPlugin plugin) {
         this.plugin = plugin;
+        this.walletFile = new File(plugin.getDataFolder(), "wallets.json");
+        this.debug = plugin.getDebugLogger().withPrefix("WalletManager");
         this.httpClient = HttpClient.newBuilder()
-            .connectTimeout(Duration.ofSeconds(10))
-            .build();
-        this.playerWallets = new HashMap<>();
+                .version(HttpClient.Version.HTTP_1_1)
+                .connectTimeout(Duration.ofSeconds(30))
+                .build();
 
-        // Get config values
-        String host = plugin.getConfig().getString("lnbits.host", "");
-        if (host.isEmpty()) {
-            throw new IllegalStateException("lnbits.host not configured!");
-        }
+        this.masterAdminKey = plugin.getConfig().getString("lnbits.adminKey", "");
+        this.lnbitsBaseUrl = resolveBaseUrl();
 
-        boolean useHttps = plugin.getConfig().getBoolean("lnbits.use_https", true);
-        this.apiBase = (useHttps ? "https://" : "http://") + host + "/api/v1";
-        this.adminKey = plugin.getConfig().getString("lnbits.api_key", "");
-
-        if (adminKey.isEmpty()) {
-            throw new IllegalStateException("lnbits.api_key not configured!");
-        }
-
-        // Ensure server UUID exists
-        String serverUuid = plugin.getConfig().getString("server_uuid", UUID.randomUUID().toString());
-        if (plugin.getConfig().getString("server_uuid") == null) {
-            plugin.getConfig().set("server_uuid", serverUuid);
-            plugin.saveConfig();
-        }
-
-        // Create data folder
-        if (!plugin.getDataFolder().exists()) {
-            plugin.getDataFolder().mkdirs();
-        }
-
-        // Setup wallet file
-        this.walletFile = new File(plugin.getDataFolder(), "wallets.yml");
-        if (!walletFile.exists()) {
-            try {
-                walletFile.createNewFile();
-                plugin.getLogger().info("Created wallets.yml");
-            } catch (IOException e) {
-                throw new RuntimeException("Could not create wallets.yml", e);
-            }
-        }
-
-        // Load wallets
-        this.walletConfig = YamlConfiguration.loadConfiguration(walletFile);
-        loadWallets();
+        load();
     }
 
-    // ================================================================
-    // Loading / Saving
-    // ================================================================
+    // -----------------------------------------------------
+    // DATA CLASS
+    // -----------------------------------------------------
+    public static class WalletData {
+        public final String walletId;
+        public final String adminKey;
+        public final String invoiceKey;
+        public final String ownerName;
 
-    private void loadWallets() {
-        playerWallets.clear();
-
-        if (!walletConfig.contains("wallets")) {
-            plugin.getLogger().info("No wallets to load");
-            return;
+        public WalletData(String walletId, String adminKey, String invoiceKey, String ownerName) {
+            this.walletId = walletId;
+            this.adminKey = adminKey;
+            this.invoiceKey = invoiceKey;
+            this.ownerName = ownerName;
         }
+    }
 
-        for (String uuidStr : walletConfig.getConfigurationSection("wallets").getKeys(false)) {
-            try {
-                UUID uuid = UUID.fromString(uuidStr);
-                String path = "wallets." + uuidStr + ".";
+    // -----------------------------------------------------
+    // FILE LOADING / SAVING
+    // -----------------------------------------------------
+    private void load() {
+        debug.debug("Loading wallets from disk…");
+        wallets.clear();
+        walletOwnerLookup.clear();
 
-                String walletId = walletConfig.getString(path + "wallet_id");
-                String adminKey = walletConfig.getString(path + "admin_key");
-                String invoiceKey = walletConfig.getString(path + "invoice_key");
-                String walletName = walletConfig.getString(path + "wallet_name");
-                long created = walletConfig.getLong(path + "created");
+        try {
+            if (!walletFile.exists()) {
+                return;
+            }
 
-                if (walletId == null || adminKey == null || invoiceKey == null) {
-                    plugin.getLogger().warning("Incomplete wallet entry for " + uuidStr);
-                    continue;
+            try (FileReader reader = new FileReader(walletFile)) {
+                JsonObject root = plugin.getGson().fromJson(reader, JsonObject.class);
+                if (root == null) {
+                    debug.debug("wallets.json was empty");
+                    return;
                 }
 
-                PlayerWallet wallet = new PlayerWallet(walletId, adminKey, invoiceKey, walletName, created);
-                playerWallets.put(uuid, wallet);
-
-            } catch (Exception e) {
-                plugin.getLogger().warning("Failed to load wallet " + uuidStr + ": " + e.getMessage());
+                for (String key : root.keySet()) {
+                    JsonObject obj = root.getAsJsonObject(key);
+                    wallets.put(
+                            key,
+                            new WalletData(
+                                    obj.get("walletId").getAsString(),
+                                    obj.get("adminKey").getAsString(),
+                                    obj.get("invoiceKey").getAsString(),
+                                    obj.get("ownerName").getAsString()
+                            )
+                    );
+                    walletOwnerLookup.put(obj.get("walletId").getAsString(), key);
+                }
+                debug.info("Loaded " + wallets.size() + " wallets from storage");
             }
-        }
-
-        plugin.getLogger().info("Loaded " + playerWallets.size() + " player wallets");
-        saveWallets();
-    }
-
-    private void saveWallets() {
-        if (walletConfig == null || walletFile == null) {
-            plugin.getLogger().warning("Cannot save wallets - not initialized");
-            return;
-        }
-
-        try {
-            walletConfig.save(walletFile);
-        } catch (IOException e) {
-            plugin.getLogger().severe("Failed to save wallets.yml: " + e.getMessage());
-        }
-    }
-
-    private void savePlayerWallet(UUID uuid) {
-        PlayerWallet w = playerWallets.get(uuid);
-        if (w == null || walletConfig == null) return;
-
-        try {
-            String path = "wallets." + uuid + ".";
-            walletConfig.set(path + "wallet_id", w.walletId);
-            walletConfig.set(path + "admin_key", w.adminKey);
-            walletConfig.set(path + "invoice_key", w.invoiceKey);
-            walletConfig.set(path + "wallet_name", w.walletName);
-            walletConfig.set(path + "created", w.created);
-
-            saveWallets();
         } catch (Exception e) {
-            plugin.getLogger().severe("Failed to save wallet for " + uuid + ": " + e.getMessage());
+            plugin.getLogger().warning("Failed to load wallets.json: " + e.getMessage());
+            debug.error("Wallet load failure", e);
+        }
+
+        if (invoiceMonitor != null) {
+            debug.debug("Re-attaching websocket monitor to existing wallets");
+            wallets.values().forEach(data -> invoiceMonitor.watchWallet(data.walletId, data.invoiceKey));
         }
     }
 
-    // ================================================================
-    // Wallet management
-    // ================================================================
+    private synchronized void save() {
+        try {
+            plugin.getDataFolder().mkdirs();
+            debug.debug("Persisting " + wallets.size() + " wallets to " + walletFile.getAbsolutePath());
 
-    public boolean hasWallet(Player player) {
-        return playerWallets.containsKey(player.getUniqueId());
+            JsonObject root = new JsonObject();
+            for (Map.Entry<String, WalletData> entry : wallets.entrySet()) {
+                JsonObject obj = new JsonObject();
+                WalletData w = entry.getValue();
+
+                obj.addProperty("walletId", w.walletId);
+                obj.addProperty("adminKey", w.adminKey);
+                obj.addProperty("invoiceKey", w.invoiceKey);
+                obj.addProperty("ownerName", w.ownerName);
+
+                root.add(entry.getKey(), obj);
+            }
+
+            try (FileWriter writer = new FileWriter(walletFile)) {
+                writer.write(plugin.getGson().toJson(root));
+            }
+        } catch (Exception e) {
+            plugin.getLogger().warning("Failed to save wallets.json: " + e.getMessage());
+            debug.error("Wallet save failure", e);
+        }
+    }
+
+    public void reload() {
+        load();
+    }
+
+    // -----------------------------------------------------
+    // SUMMARY HELPERS
+    // -----------------------------------------------------
+    public int getWalletCount() {
+        return wallets.size();
+    }
+
+    public Map<String, WalletData> getWalletSnapshot() {
+        return Collections.unmodifiableMap(wallets);
     }
 
     public boolean hasWallet(UUID uuid) {
-        return playerWallets.containsKey(uuid);
+        return hasWallet(uuid.toString());
+    }
+
+    public boolean hasWallet(Player player) {
+        return hasWallet(player.getUniqueId().toString());
+    }
+
+    public boolean hasWallet(String playerId) {
+        return wallets.containsKey(playerId);
+    }
+
+    // -----------------------------------------------------
+    // PLAYER HELPERS
+    // -----------------------------------------------------
+    public String getPlayerAdminKey(Player player) {
+        return getWalletAdminKey(player.getUniqueId().toString());
+    }
+
+    public String getPlayerInvoiceKey(Player player) {
+        return getInvoiceKey(player.getUniqueId().toString());
     }
 
     public CompletableFuture<JsonObject> getOrCreateWallet(Player player) {
-        UUID uuid = player.getUniqueId();
+        return CompletableFuture.supplyAsync(() -> {
+            String playerId = player.getUniqueId().toString();
 
-        if (playerWallets.containsKey(uuid)) {
-            PlayerWallet w = playerWallets.get(uuid);
-            JsonObject obj = new JsonObject();
-            obj.addProperty("id", w.walletId);
-            obj.addProperty("adminkey", w.adminKey);
-            obj.addProperty("inkey", w.invoiceKey);
-            return CompletableFuture.completedFuture(obj);
-        }
+            if (!hasWallet(playerId)) {
+                debug.debug("Wallet missing for " + player.getName() + " – creating now");
+                if (!createWalletFor(playerId, player.getName())) {
+                    throw new IllegalStateException("Failed to create wallet for " + player.getName());
+                }
+            }
 
-        return createWalletForPlayer(player);
+            WalletData data = wallets.get(playerId);
+            JsonObject json = new JsonObject();
+            json.addProperty("id", data.walletId);
+            json.addProperty("adminkey", data.adminKey);
+            json.addProperty("inkey", data.invoiceKey);
+            json.addProperty("owner", data.ownerName);
+            return json;
+        });
     }
 
-    private CompletableFuture<JsonObject> createWalletForPlayer(Player player) {
-        plugin.getLogger().info("Creating LNbits wallet for " + player.getName() + "...");
-
-        String endpoint = apiBase + "/wallet";
-
-        JsonObject body = new JsonObject();
-        body.addProperty("name", player.getName());
-
-        HttpRequest req = HttpRequest.newBuilder()
-                .uri(URI.create(endpoint))
-                .header("Content-Type", "application/json")
-                .header("X-Api-Key", adminKey)
-                .POST(HttpRequest.BodyPublishers.ofString(body.toString()))
-                .timeout(Duration.ofSeconds(15))
-                .build();
-
-        return httpClient.sendAsync(req, HttpResponse.BodyHandlers.ofString())
-                .thenApply(resp -> {
-                    int code = resp.statusCode();
-                    String bodyResp = resp.body();
-
-                    try {
-                        if (code >= 200 && code < 300) {
-                            JsonObject wallet = JsonParser.parseString(bodyResp).getAsJsonObject();
-
-                            if (!wallet.has("id") || !wallet.has("adminkey") || !wallet.has("inkey")) {
-                                plugin.getLogger().severe("Invalid wallet response - missing required fields");
-                                return new JsonObject();
-                            }
-
-                            String walletId = wallet.get("id").getAsString();
-                            String adminkey = wallet.get("adminkey").getAsString();
-                            String inkey = wallet.get("inkey").getAsString();
-
-                            PlayerWallet w = new PlayerWallet(
-                                walletId,
-                                adminkey,
-                                inkey,
-                                player.getName(),
-                                System.currentTimeMillis()
-                            );
-
-                            playerWallets.put(player.getUniqueId(), w);
-                            savePlayerWallet(player.getUniqueId());
-
-                            plugin.getLogger().info("✓ Wallet created for " + player.getName() + " (" + walletId + ")");
-                            return wallet;
-
-                        } else {
-                            plugin.getLogger().severe("Failed to create wallet (" + code + "): " + bodyResp);
-                            return new JsonObject();
-                        }
-                    } catch (Exception e) {
-                        plugin.getLogger().severe("Wallet creation error: " + e.getMessage());
-                        e.printStackTrace();
-                        return new JsonObject();
-                    }
-                })
-                .exceptionally(ex -> {
-                    plugin.getLogger().severe("Network error during wallet creation: " + ex.getMessage());
-                    return new JsonObject();
-                });
-    }
-
-    /**
-     * Get balance (just calls fetchBalanceFromLNbits for compatibility)
-     */
     public CompletableFuture<Long> getBalance(Player player) {
         return fetchBalanceFromLNbits(player);
     }
 
-    /**
-     * Fetches the real-time balance from LNbits
-     * Only called when explicitly needed (e.g., /wallet command)
-     */
     public CompletableFuture<Long> fetchBalanceFromLNbits(Player player) {
-        PlayerWallet w = playerWallets.get(player.getUniqueId());
-        if (w == null) {
-            plugin.getLogger().warning("Cannot fetch balance - no wallet for " + player.getName());
-            return CompletableFuture.completedFuture(0L);
-        }
-
-        String endpoint = apiBase + "/wallet";
-
-        HttpRequest req = HttpRequest.newBuilder()
-                .uri(URI.create(endpoint))
-                .header("X-Api-Key", w.adminKey)
-                .GET()
-                .timeout(Duration.ofSeconds(10))
-                .build();
-
-        return httpClient.sendAsync(req, HttpResponse.BodyHandlers.ofString())
-                .thenApply(resp -> {
-                    int code = resp.statusCode();
-                    if (code >= 200 && code < 300) {
-                        try {
-                            JsonObject wallet = JsonParser.parseString(resp.body()).getAsJsonObject();
-                            long balanceMsat = wallet.get("balance").getAsLong();
-                            long balanceSats = balanceMsat / 1000;
-
-                            plugin.getDebugLogger().debug("Fetched balance for " + player.getName() + ": " + balanceSats + " sats");
-                            return balanceSats;
-                        } catch (Exception e) {
-                            plugin.getLogger().warning("Failed to parse balance for " + player.getName() + ": " + e.getMessage());
-                            return 0L;
-                        }
-                    } else {
-                        plugin.getLogger().warning("Failed to fetch balance for " + player.getName() + " (" + code + "): " + resp.body());
-                        return 0L;
-                    }
-                })
-                .exceptionally(ex -> {
-                    plugin.getLogger().warning("Network error fetching balance for " + player.getName() + ": " + ex.getMessage());
-                    return 0L;
-                });
+        return CompletableFuture.supplyAsync(() -> {
+            debug.debug("Fetching live balance for player=" + player.getName());
+            return fetchBalanceBlocking(player.getUniqueId().toString());
+        });
     }
 
-    // ================================================================
-    // Accessors
-    // ================================================================
-
-    public String getPlayerAdminKey(Player player) {
-        PlayerWallet w = playerWallets.get(player.getUniqueId());
-        return w != null ? w.adminKey : null;
-    }
-
-    public String getPlayerInvoiceKey(Player player) {
-        PlayerWallet w = playerWallets.get(player.getUniqueId());
-        return w != null ? w.invoiceKey : null;
-    }
-    
-    public String getWalletId(Player player) {
-        PlayerWallet w = playerWallets.get(player.getUniqueId());
-        return w != null ? w.walletId : null;
-    }
-
-    public int getWalletCount() {
-        return playerWallets.size();
-    }
-
-    public void reload() {
-        playerWallets.clear();
-        if (walletFile != null && walletFile.exists()) {
-            this.walletConfig = YamlConfiguration.loadConfiguration(walletFile);
-            try {
-                loadWallets();
-            } catch (Exception e) {
-                plugin.getLogger().severe("Failed to reload wallets: " + e.getMessage());
+    public CompletableFuture<Map<String, Long>> syncAllBalancesAsync() {
+        return CompletableFuture.supplyAsync(() -> {
+            Map<String, Long> balances = new ConcurrentHashMap<>();
+            for (String playerId : wallets.keySet()) {
+                try {
+                    balances.put(playerId, fetchBalanceBlocking(playerId));
+                } catch (Exception ex) {
+                    plugin.getLogger().warning("Balance sync failed for " + playerId + ": " + ex.getMessage());
+                }
             }
-        }
+            return balances;
+        });
     }
 
     public String formatBalance(long sats) {
@@ -337,28 +227,201 @@ public class WalletManager {
         return String.format("%,d sats", sats);
     }
 
-    // ================================================================
-    // Data structure
-    // ================================================================
+    // -----------------------------------------------------
+    // WALLET LOOKUPS
+    // -----------------------------------------------------
+    public String getWalletAdminKey(String playerId) {
+        WalletData w = wallets.get(playerId);
+        return (w == null ? null : w.adminKey);
+    }
 
-    public static class PlayerWallet {
-        public final String walletId;
-        public final String adminKey;
-        public final String invoiceKey;
-        public final String walletName;
-        public final long created;
+    public String getInvoiceKey(String playerId) {
+        WalletData w = wallets.get(playerId);
+        return (w == null ? null : w.invoiceKey);
+    }
 
-        public PlayerWallet(String walletId, String adminKey, String invoiceKey,
-                            String walletName, long created) {
-            this.walletId = walletId;
-            this.adminKey = adminKey;
-            this.invoiceKey = invoiceKey;
-            this.walletName = walletName;
-            this.created = created;
+    public String getWalletId(String playerId) {
+        WalletData w = wallets.get(playerId);
+        return (w == null ? null : w.walletId);
+    }
+
+    public String getWalletId(Player player) {
+        return getWalletId(player.getUniqueId().toString());
+    }
+
+    // -----------------------------------------------------
+    // WALLET CREATION
+    // -----------------------------------------------------
+    public boolean createWalletFor(String playerId, String playerName) {
+        try {
+            if (masterAdminKey == null || masterAdminKey.isBlank()) {
+                plugin.getLogger().warning("Missing lnbits.adminKey in config.yml");
+                return false;
+            }
+
+            String walletEndpoint = lnbitsBaseUrl + "/api/v1/wallet";
+            debug.info("Creating LNbits wallet for player=" + playerName + " via " + walletEndpoint);
+
+            JsonObject requestJson = new JsonObject();
+            // LNbits API expects only 'name' for wallet creation
+            requestJson.addProperty("name", playerName);
+
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(walletEndpoint))
+                    .header("Content-Type", "application/json")
+                    .header("X-Api-Key", masterAdminKey)
+                    .timeout(Duration.ofSeconds(30))
+                    .POST(HttpRequest.BodyPublishers.ofString(requestJson.toString()))
+                    .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            debug.debug("Wallet create response status=" + response.statusCode());
+
+            if (response.statusCode() != 200 && response.statusCode() != 201) {
+                plugin.getLogger().warning("Failed to create LNbits wallet: " + response.body());
+                debug.warn("Wallet creation failed body=" + response.body());
+                return false;
+            }
+
+            JsonObject json = plugin.getGson().fromJson(response.body(), JsonObject.class);
+            debug.debug("Wallet create payload=" + json);
+
+            WalletData data = new WalletData(
+                    json.get("id").getAsString(),
+                    json.get("adminkey").getAsString(),
+                    json.get("inkey").getAsString(),
+                    playerName
+            );
+
+            wallets.put(playerId, data);
+            walletOwnerLookup.put(data.walletId, playerId);
+            save();
+
+            if (invoiceMonitor != null) {
+                invoiceMonitor.watchWallet(data.walletId, data.invoiceKey);
+            }
+            debug.info("Wallet provisioned for " + playerName + " id=" + data.walletId);
+            return true;
+
+        } catch (Exception e) {
+            plugin.getLogger().warning("Failed to create wallet: " + e.getMessage());
+            debug.error("createWalletFor exception", e);
+            return false;
+        }
+    }
+    public void attachInvoiceMonitor(WebSocketInvoiceMonitor monitor) {
+        this.invoiceMonitor = monitor;
+        if (monitor == null) {
+            return;
+        }
+
+        debug.info("Invoice monitor attached; registering " + wallets.size() + " wallets");
+        wallets.values().forEach(data -> monitor.watchWallet(data.walletId, data.invoiceKey));
+    }
+
+    // -----------------------------------------------------
+    // INTERNAL HELPERS
+    // -----------------------------------------------------
+    private long fetchBalanceBlocking(String playerId) {
+        WalletData data = wallets.get(playerId);
+        if (data == null) {
+            throw new IllegalStateException("Wallet not found for " + playerId);
+        }
+
+        debug.debug("Issuing balance fetch for wallet=" + data.walletId + " adminKey=" + maskKey(data.adminKey));
+
+        String url = lnbitsBaseUrl + "/api/v1/wallet";
+
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(url))
+                .header("X-Api-Key", data.adminKey)
+                .timeout(Duration.ofSeconds(15))
+                .GET()
+                .build();
+
+        try {
+            debug.debug("Requesting wallet info for playerId=" + playerId + " url=" + url);
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() >= 200 && response.statusCode() < 300) {
+                debug.debug("Wallet info status=" + response.statusCode() + " body=" + response.body());
+                JsonObject json = plugin.getGson().fromJson(response.body(), JsonObject.class);
+                if (json == null) {
+                    throw new IllegalStateException("Empty wallet response");
+                }
+
+                return extractBalanceSats(json);
+            }
+
+            debug.warn("Wallet info failed status=" + response.statusCode() + " body=" + response.body());
+            throw new IllegalStateException("HTTP " + response.statusCode() + ": " + response.body());
+        } catch (Exception e) {
+            debug.error("Wallet info request failed for playerId=" + playerId, e);
+            throw new IllegalStateException("Wallet info request failed: " + e.getMessage(), e);
         }
     }
 
-    public void syncAllBalances() {
-        throw new UnsupportedOperationException("Unimplemented method 'syncAllBalances'");
+    private long extractBalanceSats(JsonObject json) {
+        long balanceMsat = 0L;
+
+        if (json.has("balance_msat")) {
+            balanceMsat = json.get("balance_msat").getAsLong();
+        } else if (json.has("balance")) {
+            balanceMsat = json.get("balance").getAsLong();
+        } else if (json.has("wallet_balance")) {
+            balanceMsat = json.get("wallet_balance").getAsLong();
+        }
+
+        return balanceMsat / 1000L;
+    }
+
+    public UUID getOwnerUuidByWalletId(String walletId) {
+        String ownerId = walletOwnerLookup.get(walletId);
+        if (ownerId == null) {
+            return null;
+        }
+        try {
+            return UUID.fromString(ownerId);
+        } catch (IllegalArgumentException ex) {
+            plugin.getLogger().warning("Invalid UUID stored for wallet " + walletId + ": " + ownerId);
+            return null;
+        }
+    }
+
+    public String getOwnerNameByWalletId(String walletId) {
+        String ownerId = walletOwnerLookup.get(walletId);
+        if (ownerId == null) {
+            return null;
+        }
+        WalletData data = wallets.get(ownerId);
+        return data != null ? data.ownerName : null;
+    }
+
+    public String getLnbitsBaseUrl() {
+        return lnbitsBaseUrl;
+    }
+
+    private String resolveBaseUrl() {
+        String url = plugin.getConfig().getString("lnbits.url", "");
+        if (url == null || url.isBlank()) {
+            String host = plugin.getConfig().getString("lnbits.host", "127.0.0.1:5000");
+            boolean useHttps = plugin.getConfig().getBoolean("lnbits.use_https", false);
+            url = (useHttps ? "https://" : "http://") + host;
+        }
+        url = url.trim();
+        if (url.endsWith("/")) {
+            url = url.substring(0, url.length() - 1);
+        }
+        debug.debug("Resolved LNbits base URL=" + url);
+        return url;
+    }
+
+    private String maskKey(String key) {
+        if (key == null || key.isBlank()) {
+            return "<none>";
+        }
+        if (key.length() <= 8) {
+            return key.charAt(0) + "***" + key.charAt(key.length() - 1);
+        }
+        return key.substring(0, 4) + "***" + key.substring(key.length() - 4);
     }
 }

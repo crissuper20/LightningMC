@@ -119,44 +119,38 @@ public class QRMapRenderer extends MapRenderer {
             NamespacedKey playerUuidKey = new NamespacedKey(plugin, NBT_KEY_PLAYER_UUID);
             
             if ("lndhub".equals(type)) {
-                plugin.getDebugLogger().info("Creating secure lndhub map - credentials only in QR image");
+                plugin.getDebugLogger().info("Creating lndhub map");
             } else {
                 // For payment invoices, store them (they're meant to be shared)
                 mapMeta.getPersistentDataContainer().set(invoiceKey, PersistentDataType.STRING, content);
+                mapMeta.getPersistentDataContainer().set(typeKey, PersistentDataType.STRING, type);
+                mapMeta.getPersistentDataContainer().set(timestampKey, PersistentDataType.LONG, System.currentTimeMillis());
+                mapMeta.getPersistentDataContainer().set(playerUuidKey, PersistentDataType.STRING, player.getUniqueId().toString());
             }
-            
-            // Store metadata for all types
-            mapMeta.getPersistentDataContainer().set(typeKey, PersistentDataType.STRING, type);
-            mapMeta.getPersistentDataContainer().set(timestampKey, PersistentDataType.LONG, System.currentTimeMillis());
-            mapMeta.getPersistentDataContainer().set(playerUuidKey, PersistentDataType.STRING, player.getUniqueId().toString());
-            
-            // Set display name based on type
-            String displayName = "lndhub".equals(type) 
-                ? "§6§l Wallet Connection" 
-                : "§a§l Lightning Payment QR";
-            mapMeta.setDisplayName(displayName);
-            
-            // Add lore to warn about security for lndhub maps
+            // Set display name and lore using Adventure API
+            net.kyori.adventure.text.Component displayName = "lndhub".equals(type)
+                ? net.kyori.adventure.text.Component.text("Wallet Login").color(net.kyori.adventure.text.format.NamedTextColor.GOLD).decorate(net.kyori.adventure.text.format.TextDecoration.BOLD)
+                : net.kyori.adventure.text.Component.text("Lightning Payment QR").color(net.kyori.adventure.text.format.NamedTextColor.GREEN).decorate(net.kyori.adventure.text.format.TextDecoration.BOLD);
+            mapMeta.displayName(displayName);
+            java.util.List<net.kyori.adventure.text.Component> lore;
             if ("lndhub".equals(type)) {
-                java.util.List<String> lore = new java.util.ArrayList<>();
-                lore.add("§c§lKEEP THIS PRIVATE!");
-                lore.add("§7Contains your wallet credentials");
-                lore.add("§7Do not share with anyone!");
-                lore.add("");
-                lore.add("§8Created: " + new java.text.SimpleDateFormat("MMM dd, HH:mm").format(new java.util.Date()));
-                mapMeta.setLore(lore);
+                lore = java.util.List.of(
+                    net.kyori.adventure.text.Component.text("LNDHub login, discard of this quickly!").color(net.kyori.adventure.text.format.NamedTextColor.RED).decorate(net.kyori.adventure.text.format.TextDecoration.BOLD),
+                    net.kyori.adventure.text.Component.text("Created: " + new java.text.SimpleDateFormat("MMM dd, HH:mm").format(new java.util.Date())).color(net.kyori.adventure.text.format.NamedTextColor.DARK_GRAY)
+                );
             } else {
-                java.util.List<String> lore = new java.util.ArrayList<>();
-                lore.add("§7Scan to pay Lightning invoice");
-                lore.add("§8Created: " + new java.text.SimpleDateFormat("MMM dd, HH:mm").format(new java.util.Date()));
-                mapMeta.setLore(lore);
+                lore = java.util.List.of(
+                    net.kyori.adventure.text.Component.text("Scan to pay Lightning invoice").color(net.kyori.adventure.text.format.NamedTextColor.GRAY),
+                    net.kyori.adventure.text.Component.text("Created: " + new java.text.SimpleDateFormat("MMM dd, HH:mm").format(new java.util.Date())).color(net.kyori.adventure.text.format.NamedTextColor.DARK_GRAY)
+                );
             }
+            mapMeta.lore(lore);
             
             map.setItemMeta(mapMeta);
             
             // Add map to player's inventory
             player.getInventory().addItem(map);
-            plugin.getDebugLogger().debug("Secure QR map created for " + player.getName() + " (type: " + type + ")");
+            plugin.getDebugLogger().debug(" QR map created for " + player.getName() + " (type: " + type + ")");
             
             return true;
         } catch (WriterException e) {
@@ -296,9 +290,5 @@ public class QRMapRenderer extends MapRenderer {
         }
 
         return null;
-    }
-
-    public static boolean isSecureLNDHubMap(LightningPlugin plugin, ItemStack item) {
-        return "lndhub".equals(getMapType(plugin, item));
     }
 }

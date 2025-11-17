@@ -44,31 +44,35 @@ public class PluginMetrics {
     
     public void recordInvoiceCreated(UUID playerId, long amountSats) {
         invoicesCreated.incrementAndGet();
-        getPlayerActivity(playerId).invoicesCreated++;
+        updatePlayerActivity(playerId, activity -> activity.invoicesCreated++);
     }
     
     public void recordInvoicePaid(UUID playerId, long amountSats) {
         invoicesPaid.incrementAndGet();
         totalSatsDeposited.addAndGet(amountSats);
-        getPlayerActivity(playerId).invoicesPaid++;
-        getPlayerActivity(playerId).totalDeposited += amountSats;
+        updatePlayerActivity(playerId, activity -> {
+            activity.invoicesPaid++;
+            activity.totalDeposited += amountSats;
+        });
     }
     
     public void recordPaymentAttempt(UUID playerId) {
         paymentsAttempted.incrementAndGet();
-        getPlayerActivity(playerId).paymentsAttempted++;
+        updatePlayerActivity(playerId, activity -> activity.paymentsAttempted++);
     }
     
     public void recordPaymentSuccess(UUID playerId, long amountSats) {
         paymentsSuccessful.incrementAndGet();
         totalSatsWithdrawn.addAndGet(amountSats);
-        getPlayerActivity(playerId).paymentsSuccessful++;
-        getPlayerActivity(playerId).totalWithdrawn += amountSats;
+        updatePlayerActivity(playerId, activity -> {
+            activity.paymentsSuccessful++;
+            activity.totalWithdrawn += amountSats;
+        });
     }
     
     public void recordPaymentFailure(UUID playerId, String reason) {
         paymentsFailed.incrementAndGet();
-        getPlayerActivity(playerId).paymentsFailed++;
+        updatePlayerActivity(playerId, activity -> activity.paymentsFailed++);
         recordError("payment_failure", reason);
     }
     
@@ -177,6 +181,13 @@ public class PluginMetrics {
     
     public PlayerActivity getPlayerActivity(UUID playerId) {
         return playerActivity.computeIfAbsent(playerId, k -> new PlayerActivity());
+    }
+
+    private void updatePlayerActivity(UUID playerId, java.util.function.Consumer<PlayerActivity> updater) {
+        if (playerId == null || updater == null) {
+            return;
+        }
+        updater.accept(getPlayerActivity(playerId));
     }
     
     public List<Map.Entry<UUID, PlayerActivity>> getTopPlayers(int limit) {

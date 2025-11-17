@@ -159,7 +159,7 @@ public class WalletCommand implements CommandExecutor, TabCompleter {
                     player.sendMessage("");
                     player.sendMessage("§7Or use: §f/wallet givelogin qr §7for QR code");
                     player.sendMessage("");
-                    player.sendMessage("§c⚠ Never share your login info!");
+                    player.sendMessage("§c Never share your login info!!");
                 });
             })
             .exceptionally(ex -> {
@@ -184,7 +184,7 @@ public class WalletCommand implements CommandExecutor, TabCompleter {
                 Bukkit.getScheduler().runTask(plugin, () -> {
                     // Generate QR code map
                     try {
-                        boolean success = QRMapGenerator.giveMap(player, uri);
+                        boolean success = QRMapGenerator.giveMap(player, uri, "lndhub");
                         
                         if (success) {
                             player.sendMessage("§a✓ LNDHub QR code added to inventory!");
@@ -312,7 +312,6 @@ public class WalletCommand implements CommandExecutor, TabCompleter {
             plugin.getServer().getScheduler().runTask(plugin, () -> {
                 player.sendMessage(plugin.formatMessage("§6§l=== Your Lightning Wallet ==="));
                 player.sendMessage(plugin.formatMessage("§7Wallet ID: §f" + walletId));
-                player.sendMessage(plugin.formatMessage("§7Admin Key: §f" + adminKey.substring(0, 8) + "..."));
                 player.sendMessage(plugin.formatMessage("§7Balance: §f" + formattedBalance));
                 player.sendMessage("");
                 player.sendMessage(plugin.formatMessage("§eCommands:"));

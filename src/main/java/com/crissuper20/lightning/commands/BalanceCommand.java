@@ -2,6 +2,7 @@ package com.crissuper20.lightning.commands;
 
 import com.crissuper20.lightning.LightningPlugin;
 import com.crissuper20.lightning.managers.WalletManager;
+import com.google.gson.JsonObject;
 import com.crissuper20.lightning.util.RateLimiter;
 import org.bukkit.Bukkit;
 import org.bukkit.command.Command;
@@ -79,7 +80,7 @@ public class BalanceCommand implements CommandExecutor {
         }
 
         // Fetch and display balance
-        player.sendMessage("§eChecking balance...");
+        player.sendMessage("§eChecking balance with LNbits...");
         fetchAndDisplayBalance(player);
 
         return true;
@@ -92,10 +93,18 @@ public class BalanceCommand implements CommandExecutor {
         // Use timing context for metrics
         try (var timer = plugin.getMetrics().startTiming("balance_check")) {
             
-            walletManager.fetchBalanceFromLNbits(player)
-                .thenAccept(balance -> {
+            plugin.getLnService().getWalletInfoForPlayer(player)
+                .thenAccept(response -> {
                     Bukkit.getScheduler().runTask(plugin, () -> {
-                        displayBalance(player, balance);
+                        if (response.success && response.data != null) {
+                            long balance = extractBalanceSats(response.data);
+                            displayBalance(player, balance, response.data);
+                        } else {
+                            player.sendMessage("§cFailed to fetch balance from Lightning backend.");
+                            if (response != null) {
+                                player.sendMessage("§7" + response.error);
+                            }
+                        }
                     });
                 })
                 .exceptionally(ex -> {
@@ -115,9 +124,23 @@ public class BalanceCommand implements CommandExecutor {
     /**
      * Display balance to player in a nice format
      */
-    private void displayBalance(Player player, long balanceSats) {
+    private long extractBalanceSats(JsonObject walletInfo) {
+        long balanceMsat = 0L;
+
+        if (walletInfo.has("balance_msat")) {
+            balanceMsat = walletInfo.get("balance_msat").getAsLong();
+        } else if (walletInfo.has("balance")) {
+            balanceMsat = walletInfo.get("balance").getAsLong();
+        } else if (walletInfo.has("wallet_balance")) {
+            balanceMsat = walletInfo.get("wallet_balance").getAsLong();
+        }
+
+        return balanceMsat / 1000L;
+    }
+
+    private void displayBalance(Player player, long balanceSats, JsonObject walletInfo) {
         player.sendMessage("§8§m                                    ");
-        player.sendMessage("§6§l⚡ Your Lightning Wallet");
+        player.sendMessage("§6§l Your Lightning Wallet");
         player.sendMessage("");
         
         // Show in sats
@@ -136,6 +159,9 @@ public class BalanceCommand implements CommandExecutor {
         player.sendMessage("");
         player.sendMessage("§7Use §f/invoice <amount> §7to deposit");
         player.sendMessage("§7Use §f/pay <bolt11> §7to send payment");
+        if (walletInfo.has("name")) {
+            player.sendMessage("§7Wallet: §f" + walletInfo.get("name").getAsString());
+        }
         player.sendMessage("§8§m                                    ");
     }
 }

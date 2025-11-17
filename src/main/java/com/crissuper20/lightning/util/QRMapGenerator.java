@@ -74,12 +74,21 @@ public final class QRMapGenerator {
      * Returns true on success, false otherwise.
      */
     public static boolean giveMap(Player player, String content) {
+        // Default to 'payment' type for legacy calls
+        return giveMap(player, content, "payment");
+    }
+
+    /**
+     * Attempts to hand a generated map directly to the player, with explicit type.
+     * Returns true on success, false otherwise.
+     */
+    public static boolean giveMap(Player player, String content, String type) {
         LightningPlugin plugin = LightningPlugin.getInstance();
-        if (plugin != null) plugin.getDebugLogger().debug("QRMapGenerator.giveMap called for " + player.getName());
+        if (plugin != null) plugin.getDebugLogger().debug("QRMapGenerator.giveMap called for " + player.getName() + " (type: " + type + ")");
 
         // Prefer the QRMap shim / renderer if present
         try {
-            if (QRMapRenderer.createMapForPlayer(plugin, player, content)) return true;
+            if (QRMapRenderer.createMapForPlayer(plugin, player, content, type)) return true;
         } catch (Throwable ignored) { /* continue to QRMap shim */ }
 
         try {

@@ -1,181 +1,367 @@
 package com.crissuper20.lightning.managers;
 
 import com.crissuper20.lightning.LightningPlugin;
-import com.google.gson.*;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+import com.crissuper20.lightning.util.DebugLogger;
+import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
 
-import java.net.InetSocketAddress;
-import java.net.ProxySelector;
 import java.net.URI;
-import java.net.http.*;
-import java.security.cert.X509Certificate;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.time.Duration;
-import java.util.concurrent.*;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
-import javax.net.ssl.*;
+import java.util.concurrent.CompletableFuture;
 
 /**
- * Lightning Network Service Manager - FIXED VERSION
+ * LNService - Handles Lightning Network operations via LNbits API
+ * 
+ * This service provides high-level Lightning operations:
+ * - Creating invoices
+ * - Paying invoices
+ * - Checking wallet info
+ * 
+ * Works with WalletManager for per-player wallet management
+ * and WebSocketInvoiceMonitor for real-time payment notifications
  */
 public class LNService {
 
     private final LightningPlugin plugin;
-    private final String apiBase;
-    private final String adminKey;
+    private final WalletManager walletManager;
+    private final WebSocketInvoiceMonitor invoiceMonitor;
     private final HttpClient httpClient;
-    private WalletManager walletManager;
+    private final DebugLogger debug;
     
-    // Health tracking
-    private final AtomicInteger consecutiveFailures = new AtomicInteger(0);
-    private final AtomicLong lastSuccessTime = new AtomicLong(System.currentTimeMillis());
-    private final ScheduledExecutorService healthChecker;
-    
-    // Executor for async operations
-    private final ExecutorService executor;
+    private final String lnbitsUrl;
+    private final String adminKey;
 
-    public LNService(LightningPlugin plugin) {
+    public LNService(LightningPlugin plugin, WalletManager walletManager, WebSocketInvoiceMonitor invoiceMonitor) {
         this.plugin = plugin;
-        plugin.getDebugLogger().info("Initializing Lightning Service...");
-
-        try {
-            validateConfiguration();
-            
-            // Read configuration
-            String host = plugin.getConfig().getString("lnbits.host");
-            boolean useHttps = plugin.getConfig().getBoolean("lnbits.use_https", true);
-            this.apiBase = (useHttps ? "https://" : "http://") + host + "/api/v1";
-            this.adminKey = plugin.getConfig().getString("lnbits.api_key");
-            
-            // Create HTTP client with Tor/TLS options
-            this.httpClient = createHttpClient();
-            
-            // Create executor service
-            this.executor = Executors.newFixedThreadPool(4, r -> {
-                Thread t = new Thread(r, "LNService-Worker");
-                t.setDaemon(true);
-                return t;
-            });
-            
-            // Create health checker
-            this.healthChecker = Executors.newScheduledThreadPool(1, r -> {
-                Thread t = new Thread(r, "LNService-HealthCheck");
-                t.setDaemon(true);
-                return t;
-            });
-            
-            // Start health monitoring
-            startHealthMonitoring();
-            
-            plugin.getDebugLogger().info("Lightning Service initialized successfully");
-            plugin.getDebugLogger().info("Backend: LNbits");
-            plugin.getDebugLogger().info("API Base: " + apiBase);
-        } catch (Exception e) {
-            plugin.getLogger().severe("Failed to initialize Lightning Service: " + e.getMessage());
-            throw new IllegalStateException("Lightning Service initialization failed", e);
-        }
-    }
-
-    public void setWalletManager(WalletManager walletManager) {
         this.walletManager = walletManager;
-        plugin.getDebugLogger().debug("WalletManager injected into LNService");
-    }
+        this.invoiceMonitor = invoiceMonitor;
+        this.debug = plugin.getDebugLogger().withPrefix("LNService");
 
-    /**
-     * Create HTTP client with optional Tor proxy and TLS verification settings
-     */
-    private HttpClient createHttpClient() {
-        HttpClient.Builder builder = HttpClient.newBuilder()
-            .connectTimeout(Duration.ofSeconds(30))
-            .followRedirects(HttpClient.Redirect.NORMAL);
-
-        // Tor proxy support
-        boolean useTor = plugin.getConfig().getBoolean("lnbits.use_tor_proxy", false);
-        if (useTor) {
-            String torHost = plugin.getConfig().getString("lnbits.tor_proxy_host", "127.0.0.1");
-            int torPort = plugin.getConfig().getInt("lnbits.tor_proxy_port", 9050);
-            
-            ProxySelector proxy = ProxySelector.of(
-                new InetSocketAddress(torHost, torPort)
-            );
-            builder.proxy(proxy);
-            plugin.getDebugLogger().info("LNbits using Tor proxy: " + torHost + ":" + torPort);
-        }
-
-        // Skip TLS verification (for self-signed certs)
-        boolean skipTls = plugin.getConfig().getBoolean("lnbits.skip_tls_verify", false);
-        if (skipTls) {
-            try {
-                SSLContext sslContext = SSLContext.getInstance("TLS");
-                sslContext.init(null, new TrustManager[]{new TrustAllManager()}, new java.security.SecureRandom());
-                builder.sslContext(sslContext);
-                plugin.getDebugLogger().warning("LNbits TLS verification DISABLED - use only for testing!");
-            } catch (Exception e) {
-                plugin.getDebugLogger().error("Failed to disable TLS verification", e);
-            }
-        }
-
-        return builder.build();
-    }
-
-    /**
-     * Start periodic health monitoring
-     */
-    private void startHealthMonitoring() {
-        healthChecker.scheduleAtFixedRate(() -> {
-            try {
-                getWalletInfoAsync().thenAccept(response -> {
-                    if (response.success) {
-                        consecutiveFailures.set(0);
-                        lastSuccessTime.set(System.currentTimeMillis());
-                    } else {
-                        consecutiveFailures.incrementAndGet();
-                    }
-                });
-            } catch (Exception e) {
-                consecutiveFailures.incrementAndGet();
-                plugin.getDebugLogger().error("Health check failed", e);
-            }
-        }, 60, 60, TimeUnit.SECONDS);
-    }
-
-    private void validateConfiguration() {
-        plugin.saveDefaultConfig();
-
-        String host = plugin.getConfig().getString("lnbits.host");
-        if (host == null || host.trim().isEmpty()) {
-            throw new IllegalStateException("Missing required config: lnbits.host");
-        }
-
-        String apiKey = plugin.getConfig().getString("lnbits.api_key");
-        if (apiKey == null || apiKey.trim().isEmpty()) {
-            throw new IllegalStateException("Missing required config: lnbits.api_key (admin key)");
-        }
-        if (apiKey.length() < 32) {
-            throw new IllegalStateException("Invalid lnbits.api_key: too short (expected 32+ characters)");
+        // Build LNbits URL from config
+        String host = plugin.getConfig().getString("lnbits.host", "http://127.0.0.1:5000");
+        boolean useHttps = plugin.getConfig().getBoolean("lnbits.use_https", false);
+        
+        if (!host.startsWith("http://") && !host.startsWith("https://")) {
+            host = (useHttps ? "https://" : "http://") + host;
         }
         
-        if (host.endsWith(".onion")) {
-            boolean useTor = plugin.getConfig().getBoolean("lnbits.use_tor_proxy", false);
-            if (!useTor) {
-                throw new IllegalStateException("Using .onion host requires lnbits.use_tor_proxy: true");
-            }
-        }
+        this.lnbitsUrl = host;
+        this.adminKey = plugin.getConfig().getString("lnbits.adminKey", "");
 
-        plugin.getDebugLogger().debug("Configuration validation successful");
+        this.httpClient = HttpClient.newBuilder()
+                .version(HttpClient.Version.HTTP_1_1)
+                .connectTimeout(Duration.ofSeconds(30))
+                .build();
+
+        debug.info("LNService initialized baseUrl=" + lnbitsUrl);
+        
+        startHealthChecks();
     }
 
-    // ========================================================================
-    // Response & Data Classes
-    // ========================================================================
+    /**
+     * Starts periodic health monitoring tasks.
+     */
+    private void startHealthChecks() {
+        Bukkit.getScheduler().runTaskTimerAsynchronously(plugin, () -> {
+            try {
+                // Health checks can be implemented here if needed
+                debug.debug("Health check tick");
+            } catch (Exception e) {
+                plugin.getLogger().warning("Health check failed: " + e.getMessage());
+            }
+        }, 200L, 200L);
+    }
+
+    // ================================================================
+    // Invoice Operations
+    // ================================================================
+
+    /**
+     * Create an invoice for a player using their wallet
+     */
+    public CompletableFuture<LNResponse<Invoice>> createInvoiceForPlayer(Player player, long amountSats, String memo) {
+        if (!walletManager.hasWallet(player)) {
+            CompletableFuture<LNResponse<Invoice>> future = new CompletableFuture<>();
+            future.completeExceptionally(new IllegalStateException("Player has no wallet"));
+            return future;
+        }
+
+        String invoiceKey = walletManager.getPlayerInvoiceKey(player);
+        String walletId = walletManager.getWalletId(player);
+
+        if (invoiceKey == null || walletId == null) {
+            CompletableFuture<LNResponse<Invoice>> future = new CompletableFuture<>();
+            future.completeExceptionally(new IllegalStateException("Failed to get wallet credentials"));
+            return future;
+        }
+
+        return createInvoice(invoiceKey, amountSats, memo);
+    }
+
+    /**
+     * Create an invoice using a specific invoice key
+     */
+    public CompletableFuture<LNResponse<Invoice>> createInvoice(String invoiceKey, long amountSats, String memo) {
+        debug.info("Creating invoice amount=" + amountSats + " memo='" + memo + "' invoiceKey=" + maskKey(invoiceKey));
+        JsonObject requestBody = new JsonObject();
+        requestBody.addProperty("out", false);
+        requestBody.addProperty("amount", amountSats);
+        requestBody.addProperty("memo", memo);
+        
+        int expirySeconds = plugin.getConfig().getInt("lnbits.invoice_expiry_seconds", 3600);
+        requestBody.addProperty("expiry", expirySeconds);
+
+        String url = lnbitsUrl + "/api/v1/payments";
+
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(url))
+                .header("Content-Type", "application/json")
+                .header("X-Api-Key", invoiceKey)
+                .POST(HttpRequest.BodyPublishers.ofString(requestBody.toString()))
+                .timeout(Duration.ofSeconds(30))
+                .build();
+
+        return httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofString())
+                .thenApply(response -> {
+                debug.debug("Invoice response status=" + response.statusCode() + " body=" + response.body());
+                    if (response.statusCode() >= 200 && response.statusCode() < 300) {
+                        try {
+                            JsonObject json = JsonParser.parseString(response.body()).getAsJsonObject();
+
+                            Invoice invoice = new Invoice();
+                            invoice.paymentHash = json.get("payment_hash").getAsString();
+                            invoice.bolt11 = json.get("payment_request").getAsString();
+                            invoice.checkingId = json.get("checking_id").getAsString();
+
+                            return LNResponse.success(invoice, response.statusCode());
+                        } catch (Exception e) {
+                            debug.error("Failed to parse invoice response", e);
+                            return LNResponse.<Invoice>error("Failed to parse response: " + e.getMessage(), response.statusCode());
+                        }
+                    } else {
+                        String error = "Invoice creation failed: HTTP " + response.statusCode();
+                        debug.error(error + " - " + response.body());
+                        return LNResponse.<Invoice>error(error, response.statusCode());
+                    }
+                })
+                .exceptionally(ex -> {
+                    debug.error("Invoice creation exception", ex);
+                    return LNResponse.<Invoice>error("Network error: " + ex.getMessage(), 0);
+                });
+    }
+
+    // ================================================================
+    // Payment Operations
+    // ================================================================
+
+    /**
+     * Pay an invoice using a player's wallet
+     */
+    public CompletableFuture<LNResponse<JsonObject>> payInvoiceForPlayer(Player player, String bolt11) {
+        if (!walletManager.hasWallet(player)) {
+            CompletableFuture<LNResponse<JsonObject>> future = new CompletableFuture<>();
+            future.completeExceptionally(new IllegalStateException("Player has no wallet"));
+            return future;
+        }
+
+        String adminKeyPlayer = walletManager.getPlayerAdminKey(player);
+
+        if (adminKeyPlayer == null) {
+            CompletableFuture<LNResponse<JsonObject>> future = new CompletableFuture<>();
+            future.completeExceptionally(new IllegalStateException("Failed to get wallet admin key"));
+            return future;
+        }
+
+        return payInvoice(adminKeyPlayer, bolt11);
+    }
+
+    /**
+     * Pay an invoice using a specific admin key
+     */
+    public CompletableFuture<LNResponse<JsonObject>> payInvoice(String adminKey, String bolt11) {
+        debug.info("Paying invoice with adminKey=" + maskKey(adminKey));
+        JsonObject requestBody = new JsonObject();
+        requestBody.addProperty("out", true);
+        requestBody.addProperty("bolt11", bolt11);
+
+        String url = lnbitsUrl + "/api/v1/payments";
+
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(url))
+                .header("Content-Type", "application/json")
+                .header("X-Api-Key", adminKey)
+                .POST(HttpRequest.BodyPublishers.ofString(requestBody.toString()))
+                .timeout(Duration.ofSeconds(60))
+                .build();
+
+        return httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofString())
+                .thenApply(response -> {
+                    debug.debug("Pay invoice status=" + response.statusCode() + " body=" + response.body());
+                    if (response.statusCode() >= 200 && response.statusCode() < 300) {
+                        try {
+                            JsonObject json = JsonParser.parseString(response.body()).getAsJsonObject();
+                            return LNResponse.success(json, response.statusCode());
+                        } catch (Exception e) {
+                            debug.error("Failed to parse payment response", e);
+                            return LNResponse.<JsonObject>error("Failed to parse response: " + e.getMessage(), response.statusCode());
+                        }
+                    } else {
+                        String error = "Payment failed: HTTP " + response.statusCode();
+                        debug.error(error + " - " + response.body());
+                        return LNResponse.<JsonObject>error(error + " - " + response.body(), response.statusCode());
+                    }
+                })
+                .exceptionally(ex -> {
+                    debug.error("Payment exception", ex);
+                    return LNResponse.<JsonObject>error("Network error: " + ex.getMessage(), 0);
+                });
+    }
+
+    // ================================================================
+    // Wallet Operations
+    // ================================================================
+
+    /**
+     * Get wallet info (used for health checks)
+     */
+    public CompletableFuture<LNResponse<JsonObject>> getWalletInfoAsync() {
+        return getWalletInfo(adminKey);
+    }
+
+    /**
+     * Get wallet info for a specific player using their admin key
+     */
+    public CompletableFuture<LNResponse<JsonObject>> getWalletInfoForPlayer(Player player) {
+        if (!walletManager.hasWallet(player)) {
+            CompletableFuture<LNResponse<JsonObject>> future = new CompletableFuture<>();
+            future.completeExceptionally(new IllegalStateException("Player has no wallet"));
+            return future;
+        }
+
+        String adminKeyPlayer = walletManager.getPlayerAdminKey(player);
+        if (adminKeyPlayer == null || adminKeyPlayer.isBlank()) {
+            CompletableFuture<LNResponse<JsonObject>> future = new CompletableFuture<>();
+            future.completeExceptionally(new IllegalStateException("Missing player admin key"));
+            return future;
+        }
+
+        return getWalletInfo(adminKeyPlayer);
+    }
+
+    private CompletableFuture<LNResponse<JsonObject>> getWalletInfo(String apiKey) {
+        String url = lnbitsUrl + "/api/v1/wallet";
+
+        debug.debug("Fetching wallet info with apiKey=" + maskKey(apiKey));
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(url))
+                .header("X-Api-Key", apiKey)
+                .GET()
+                .timeout(Duration.ofSeconds(10))
+                .build();
+
+        return httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofString())
+                .thenApply(response -> {
+                    debug.debug("Wallet info response status=" + response.statusCode() + " body=" + response.body());
+                    if (response.statusCode() >= 200 && response.statusCode() < 300) {
+                        try {
+                            JsonObject json = JsonParser.parseString(response.body()).getAsJsonObject();
+                            return LNResponse.success(json, response.statusCode());
+                        } catch (Exception e) {
+                            return LNResponse.<JsonObject>error("Failed to parse response", response.statusCode());
+                        }
+                    } else {
+                        debug.warn("Wallet info failed status=" + response.statusCode());
+                        return LNResponse.<JsonObject>error("Failed to get wallet info", response.statusCode());
+                    }
+                })
+                .exceptionally(ex -> {
+                    debug.error("Wallet info exception", ex);
+                    return LNResponse.<JsonObject>error("Network error: " + ex.getMessage(), 0);
+                });
+    }
+
+    // ================================================================
+    // Public API
+    // ================================================================
+
+    /**
+     * Returns true if the player has a wallet set up.
+     */
+    public boolean hasWallet(Player player) {
+        return walletManager.hasWallet(player.getUniqueId().toString());
+    }
+
+    /**
+     * Returns the admin key of the player's wallet.
+     */
+    public String getAdminKey(Player player) {
+        return walletManager.getWalletAdminKey(player.getUniqueId().toString());
+    }
+
+    /**
+     * Returns the invoice key of the player's wallet.
+     */
+    public String getInvoiceKey(Player player) {
+        return walletManager.getInvoiceKey(player.getUniqueId().toString());
+    }
+
+    /**
+     * Returns the LNBits wallet ID of the player.
+     */
+    public String getWalletId(Player player) {
+        return walletManager.getWalletId(player.getUniqueId().toString());
+    }
+
+    /**
+     * Creates a new wallet for the player.
+     */
+    public boolean createWallet(Player player) {
+        return walletManager.createWalletFor(player.getUniqueId().toString(), player.getName());
+    }
+
+    /**
+     * Used when doing API requests
+     */
+    public HttpClient getHttpClient() {
+        return httpClient;
+    }
+
+    /**
+     * Expose WebSocket monitor for subscriptions.
+     */
+    public WebSocketInvoiceMonitor getInvoiceMonitor() {
+        return invoiceMonitor;
+    }
+
+    /**
+     * Get backend name for display
+     */
+    public String getBackendName() {
+        return "LNbits (" + lnbitsUrl + ")";
+    }
+
+    // ================================================================
+    // Data Classes
+    // ================================================================
+
+    public static class Invoice {
+        public String paymentHash;
+        public String bolt11;
+        public String checkingId;
+    }
 
     public static class LNResponse<T> {
         public final boolean success;
         public final T data;
         public final String error;
         public final int statusCode;
-        
-        public LNResponse(boolean success, T data, String error, int statusCode) {
+
+        private LNResponse(boolean success, T data, String error, int statusCode) {
             this.success = success;
             this.data = data;
             this.error = error;
@@ -183,418 +369,21 @@ public class LNService {
         }
 
         public static <T> LNResponse<T> success(T data, int statusCode) {
-            return new LNResponse<>(true, data, null, statusCode);
+            return new LNResponse<T>(true, data, null, statusCode);
         }
-        
-        public static <T> LNResponse<T> failure(String error, int statusCode) {
-            return new LNResponse<>(false, null, error, statusCode);
-        }
-    }
-    
-    public static class Invoice {
-        public final String paymentHash;
-        public final String bolt11;
-        public final long amount;
-        
-        public Invoice(String bolt11, String paymentHash, long amount) {
-            this.bolt11 = bolt11;
-            this.paymentHash = paymentHash;
-            this.amount = amount;
-        }
-        
-        @Override
-        public String toString() {
-            return "Invoice{hash=" + paymentHash.substring(0, 8) + "..., amount=" + amount + "}";
+
+        public static <T> LNResponse<T> error(String error, int statusCode) {
+            return new LNResponse<T>(false, null, error, statusCode);
         }
     }
 
-    public static class HealthMetrics {
-        public final boolean healthy;
-        public final int consecutiveFailures;
-        public final long lastSuccessTime;
-        public final long timeSinceSuccess;
-        
-        public HealthMetrics(boolean healthy, int consecutiveFailures, 
-                           long lastSuccessTime, long timeSinceSuccess) {
-            this.healthy = healthy;
-            this.consecutiveFailures = consecutiveFailures;
-            this.lastSuccessTime = lastSuccessTime;
-            this.timeSinceSuccess = timeSinceSuccess;
+    private String maskKey(String key) {
+        if (key == null || key.isBlank()) {
+            return "<none>";
         }
-        
-        @Override
-        public String toString() {
-            return "HealthMetrics{healthy=" + healthy + 
-                ", failures=" + consecutiveFailures + 
-                ", timeSinceSuccess=" + timeSinceSuccess + "ms}";
+        if (key.length() <= 8) {
+            return key.charAt(0) + "***" + key.charAt(key.length() - 1);
         }
-    }
-
-    // ========================================================================
-    // Player-Aware LNbits API
-    // ========================================================================
-
-    /**
-     * Create invoice for a specific player using their wallet
-     */
-    public CompletableFuture<LNResponse<Invoice>> createInvoiceForPlayer(
-            Player player, long amountSats, String memo) {
-
-        if (walletManager == null) {
-            return CompletableFuture.completedFuture(
-                LNResponse.failure("WalletManager not initialized", 500)
-            );
-        }
-
-        if (!walletManager.hasWallet(player)) {
-            return CompletableFuture.completedFuture(
-                LNResponse.failure("Player has no wallet", 400)
-            );
-        }
-
-        String key = walletManager.getPlayerAdminKey(player);
-        if (key == null) {
-            return CompletableFuture.completedFuture(
-                LNResponse.failure("Failed to get player wallet key", 500)
-            );
-        }
-
-        return createInvoiceAsync(amountSats, memo, key);
-    }
-
-    /**
-     * Get balance for a specific player
-     */
-    public CompletableFuture<LNResponse<Long>> getBalanceForPlayer(Player player) {
-        if (walletManager == null) {
-            return CompletableFuture.completedFuture(
-                LNResponse.failure("WalletManager not initialized", 500)
-            );
-        }
-
-        if (!walletManager.hasWallet(player)) {
-            return CompletableFuture.completedFuture(
-                LNResponse.failure("Player has no wallet", 400)
-            );
-        }
-
-        return walletManager.fetchBalanceFromLNbits(player)
-            .thenApply(balance -> LNResponse.success(balance, 200))
-            .exceptionally(e -> {
-                plugin.getLogger().warning("Failed to fetch balance for " + player.getName() + ": " + e.getMessage());
-                return LNResponse.failure("Failed to fetch balance: " + e.getMessage(), 500);
-            });
-    }
-
-    /**
-     * Check invoice status for a specific player
-     */
-    public CompletableFuture<LNResponse<Boolean>> checkInvoiceForPlayer(Player player, String paymentHash) {
-        if (walletManager == null) {
-            return CompletableFuture.completedFuture(
-                LNResponse.failure("WalletManager not initialized", 500)
-            );
-        }
-
-        if (!walletManager.hasWallet(player)) {
-            return CompletableFuture.completedFuture(
-                LNResponse.failure("Player has no wallet", 400)
-            );
-        }
-
-        String key = walletManager.getPlayerAdminKey(player);
-        if (key == null) {
-            return CompletableFuture.completedFuture(
-                LNResponse.failure("Failed to get player wallet key", 500)
-            );
-        }
-
-        return checkInvoiceAsync(paymentHash, key);
-    }
-
-    /**
-     * Pay invoice for a specific player using their wallet
-     */
-    public CompletableFuture<LNResponse<JsonObject>> payInvoiceForPlayer(Player player, String bolt11) {
-        if (walletManager == null) {
-            return CompletableFuture.completedFuture(
-                LNResponse.failure("WalletManager not initialized", 500)
-            );
-        }
-
-        if (!walletManager.hasWallet(player)) {
-            return CompletableFuture.completedFuture(
-                LNResponse.failure("Player has no wallet", 400)
-            );
-        }
-
-        String key = walletManager.getPlayerAdminKey(player);
-        if (key == null) {
-            return CompletableFuture.completedFuture(
-                LNResponse.failure("Failed to get player wallet key", 500)
-            );
-        }
-
-        return payInvoiceAsync(bolt11, key);
-    }
-
-    // ========================================================================
-    // Core LNbits API Methods
-    // ========================================================================
-
-    private CompletableFuture<LNResponse<Invoice>> createInvoiceAsync(long amountSats, String memo, String key) {
-    JsonObject body = new JsonObject();
-    body.addProperty("out", false);  // Incoming payment
-    body.addProperty("amount", amountSats);
-    body.addProperty("memo", memo);
-    
-    plugin.getDebugLogger().debug("Creating invoice: amount=" + amountSats + ", memo=" + memo);
-    
-    return sendPost("/payments", key, body)
-        .thenApply(resp -> {
-            if (!resp.success) {
-                plugin.getDebugLogger().error("Failed to create invoice: " + resp.error);
-                return LNResponse.failure(resp.error, resp.statusCode);
-            }
-            
-            JsonObject obj = resp.data;
-            
-            // FIXED: LNbits returns "bolt11" not "payment_request"
-            if (!obj.has("bolt11") || !obj.has("payment_hash")) {
-                plugin.getDebugLogger().error("Invalid invoice response: " + obj.toString());
-                return LNResponse.failure("Invalid response from LNbits", resp.statusCode);
-            }
-            
-            Invoice invoice = new Invoice(
-                obj.get("bolt11").getAsString(),  // FIXED: Changed from "payment_request"
-                obj.get("payment_hash").getAsString(),
-                amountSats
-            );
-            
-            plugin.getDebugLogger().info("Invoice created: " + invoice.paymentHash);
-            return LNResponse.success(invoice, resp.statusCode);
-        });
-}
-    private CompletableFuture<LNResponse<Boolean>> checkInvoiceAsync(String paymentHash, String key) {
-        plugin.getDebugLogger().debug("Checking invoice: " + paymentHash);
-        
-        return sendGet("/payments/" + paymentHash, key)
-            .thenApply(resp -> {
-                if (!resp.success) {
-                    plugin.getDebugLogger().debug("Failed to check invoice: " + resp.error);
-                    return LNResponse.failure(resp.error, resp.statusCode);
-                }
-                
-                boolean paid = resp.data.has("paid") && resp.data.get("paid").getAsBoolean();
-                plugin.getDebugLogger().debug("Invoice " + paymentHash + " paid: " + paid);
-                
-                return LNResponse.success(paid, resp.statusCode);
-            });
-    }
-
-    /**
-     * FIXED: Pay an invoice with correct LNbits API format
-     */
-    private CompletableFuture<LNResponse<JsonObject>> payInvoiceAsync(String bolt11, String key) {
-        JsonObject body = new JsonObject();
-        body.addProperty("out", true);  // Outgoing payment
-        body.addProperty("bolt11", bolt11);
-        
-        plugin.getDebugLogger().info("=== Sending Payment ===");
-        plugin.getDebugLogger().info("Bolt11 (first 20 chars): " + bolt11.substring(0, Math.min(20, bolt11.length())));
-        plugin.getDebugLogger().info("Request body: " + body.toString());
-        
-        return sendPost("/payments", key, body)
-            .thenApply(resp -> {
-                plugin.getDebugLogger().info("=== Payment Response ===");
-                plugin.getDebugLogger().info("Success: " + resp.success);
-                plugin.getDebugLogger().info("Status code: " + resp.statusCode);
-                
-                if (resp.success) {
-                    plugin.getDebugLogger().info("✓ Payment sent successfully");
-                    plugin.getDebugLogger().debug("Response: " + resp.data.toString());
-                } else {
-                    plugin.getDebugLogger().error("✗ Payment failed: " + resp.error);
-                }
-                
-                return resp;
-            });
-    }
-
-    // ========================================================================
-    // Admin Wallet API (backward compatible)
-    // ========================================================================
-
-    public CompletableFuture<LNResponse<JsonObject>> getWalletInfoAsync() {
-        return sendGet("/wallet", adminKey);
-    }
-
-    public CompletableFuture<LNResponse<Long>> getBalanceAsync(String walletId) {
-        return getWalletInfoAsync().thenApply(resp -> {
-            if (!resp.success) return LNResponse.failure(resp.error, resp.statusCode);
-            long sats = resp.data.get("balance").getAsLong() / 1000;
-            return LNResponse.success(sats, resp.statusCode);
-        });
-    }
-
-    public CompletableFuture<LNResponse<Invoice>> createInvoiceAsync(long amountSats, String memo) {
-        return createInvoiceAsync(amountSats, memo, adminKey);
-    }
-
-    public CompletableFuture<LNResponse<Boolean>> checkInvoiceAsync(String paymentHash) {
-        return checkInvoiceAsync(paymentHash, adminKey);
-    }
-
-    public CompletableFuture<LNResponse<JsonObject>> payInvoiceAsync(String bolt11) {
-        return payInvoiceAsync(bolt11, adminKey);
-    }
-
-    // ========================================================================
-    // HTTP helpers
-    // ========================================================================
-
-    private CompletableFuture<LNResponse<JsonObject>> sendGet(String path, String key) {
-        return CompletableFuture.supplyAsync(() -> {
-            try {
-                HttpRequest req = HttpRequest.newBuilder()
-                    .uri(URI.create(apiBase + path))
-                    .header("X-Api-Key", key)
-                    .GET()
-                    .timeout(Duration.ofSeconds(30))
-                    .build();
-
-                plugin.getDebugLogger().debug("GET " + apiBase + path);
-                HttpResponse<String> response = httpClient.send(req, HttpResponse.BodyHandlers.ofString());
-                
-                return parseResponse(response);
-            } catch (Exception e) {
-                plugin.getDebugLogger().error("HTTP GET failed: " + path, e);
-                consecutiveFailures.incrementAndGet();
-                return LNResponse.failure("Request failed: " + e.getMessage(), 500);
-            }
-        }, executor);
-    }
-
-    private CompletableFuture<LNResponse<JsonObject>> sendPost(String path, String key, JsonObject body) {
-        return CompletableFuture.supplyAsync(() -> {
-            try {
-                HttpRequest req = HttpRequest.newBuilder()
-                    .uri(URI.create(apiBase + path))
-                    .header("X-Api-Key", key)
-                    .header("Content-Type", "application/json")
-                    .POST(HttpRequest.BodyPublishers.ofString(body.toString()))
-                    .timeout(Duration.ofSeconds(30))
-                    .build();
-
-                plugin.getDebugLogger().debug("POST " + apiBase + path);
-                plugin.getDebugLogger().debug("Body: " + body.toString());
-                
-                HttpResponse<String> response = httpClient.send(req, HttpResponse.BodyHandlers.ofString());
-                
-                return parseResponse(response);
-            } catch (Exception e) {
-                plugin.getDebugLogger().error("HTTP POST failed: " + path, e);
-                consecutiveFailures.incrementAndGet();
-                return LNResponse.failure("Request failed: " + e.getMessage(), 500);
-            }
-        }, executor);
-    }
-
-    private LNResponse<JsonObject> parseResponse(HttpResponse<String> resp) {
-        int code = resp.statusCode();
-        String body = resp.body();
-        
-        plugin.getDebugLogger().debug("Response code: " + code);
-        plugin.getDebugLogger().debug("Response body: " + body);
-        
-        try {
-            JsonElement parsed = JsonParser.parseString(body);
-            
-            if (code >= 200 && code < 300) {
-                consecutiveFailures.set(0);
-                lastSuccessTime.set(System.currentTimeMillis());
-                return LNResponse.success(parsed.getAsJsonObject(), code);
-            }
-            
-            String errorMsg = parsed.isJsonObject() && parsed.getAsJsonObject().has("detail") 
-                ? parsed.getAsJsonObject().get("detail").getAsString()
-                : body;
-            
-            return LNResponse.failure(errorMsg, code);
-        } catch (JsonSyntaxException e) {
-            plugin.getDebugLogger().error("Failed to parse JSON response: " + body);
-            return LNResponse.failure("Invalid JSON: " + body, code);
-        }
-    }
-
-    // ========================================================================
-    // Diagnostics & Accessors
-    // ========================================================================
-
-    public boolean isHealthy() {
-        return consecutiveFailures.get() < 3;
-    }
-
-    public HealthMetrics getHealthMetrics() {
-        long lastSuccess = lastSuccessTime.get();
-        long timeSinceSuccess = System.currentTimeMillis() - lastSuccess;
-        
-        return new HealthMetrics(
-            isHealthy(),
-            consecutiveFailures.get(),
-            lastSuccess,
-            timeSinceSuccess
-        );
-    }
-
-    public String getBackendName() {
-        return "LNbits";
-    }
-
-    public String getBackend() {
-        return "lnbits";
-    }
-
-    public boolean supportsPerPlayerWallets() {
-        return true;
-    }
-
-    public void shutdown() {
-        plugin.getDebugLogger().info("Shutting down Lightning Service...");
-        
-        try {
-            healthChecker.shutdown();
-            if (!healthChecker.awaitTermination(5, TimeUnit.SECONDS)) {
-                healthChecker.shutdownNow();
-            }
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            healthChecker.shutdownNow();
-        }
-        
-        try {
-            executor.shutdown();
-            if (!executor.awaitTermination(5, TimeUnit.SECONDS)) {
-                executor.shutdownNow();
-            }
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            executor.shutdownNow();
-        }
-        
-        plugin.getDebugLogger().info("Lightning Service shut down.");
-    }
-
-    private static class TrustAllManager implements X509TrustManager {
-        @Override
-        public void checkClientTrusted(X509Certificate[] chain, String authType) {}
-        
-        @Override
-        public void checkServerTrusted(X509Certificate[] chain, String authType) {}
-        
-        @Override
-        public X509Certificate[] getAcceptedIssuers() {
-            return new X509Certificate[0];
-        }
+        return key.substring(0, 4) + "***" + key.substring(key.length() - 4);
     }
 }
