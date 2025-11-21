@@ -2,6 +2,7 @@ main: com.crissuper20.lightning.LightningPlugin
 name: ${NAME}
 version: "${VERSION}"
 api-version: "1.16"
+folia-supported: true
 author: crissuper20
 description: lnbits on minecraft
 commands:

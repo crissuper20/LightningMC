@@ -1,8 +1,8 @@
 
 
-# Debug mode - enables detailed API logging (tcpdump-style)
+# Debug mode - enables detailed API logging 
 # Shows ALL request/response details for troubleshooting
-debug: true
+debug: false
 
 # LNbits Backend Configuration
 lnbits:

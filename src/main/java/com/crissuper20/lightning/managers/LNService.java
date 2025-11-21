@@ -4,7 +4,6 @@ import com.crissuper20.lightning.LightningPlugin;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.crissuper20.lightning.util.DebugLogger;
-import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
 
 import java.net.URI;
@@ -67,7 +66,7 @@ public class LNService {
      * Starts periodic health monitoring tasks.
      */
     private void startHealthChecks() {
-        Bukkit.getScheduler().runTaskTimerAsynchronously(plugin, () -> {
+        plugin.getScheduler().runTaskTimerAsync(() -> {
             try {
                 // Health checks can be implemented here if needed
                 debug.debug("Health check tick");

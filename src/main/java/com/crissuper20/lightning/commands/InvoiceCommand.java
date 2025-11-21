@@ -140,19 +140,19 @@ public class InvoiceCommand implements CommandExecutor, TabCompleter {
         // Create invoice asynchronously using player's wallet
         plugin.getLnService().createInvoiceForPlayer(player, amountSats, memo)
             .thenAccept(response -> {
-                Bukkit.getScheduler().runTask(plugin, () -> {
+                plugin.getScheduler().runTaskForPlayer(player.getUniqueId(), p -> {
                     if (response.success && response.data != null) {
-                        handleStandardInvoiceCreated(player, response.data, amountSats, memo);
+                        handleStandardInvoiceCreated(p, response.data, amountSats, memo);
                     } else {
-                        player.sendMessage(plugin.formatError("Failed to create invoice: " + response.error));
-                        plugin.getDebugLogger().error("Invoice creation failed for " + player.getName() + ": " + response.error);
+                        p.sendMessage(plugin.formatError("Failed to create invoice: " + response.error));
+                        plugin.getDebugLogger().error("Invoice creation failed for " + p.getName() + ": " + response.error);
                     }
                 });
             })
             .exceptionally(ex -> {
-                Bukkit.getScheduler().runTask(plugin, () -> {
-                    player.sendMessage(plugin.formatError("An error occurred while creating the invoice."));
-                    plugin.getDebugLogger().error("Invoice creation exception for " + player.getName(), ex);
+                plugin.getScheduler().runTaskForPlayer(player.getUniqueId(), p -> {
+                    p.sendMessage(plugin.formatError("An error occurred while creating the invoice."));
+                    plugin.getDebugLogger().error("Invoice creation exception for " + p.getName(), ex);
                 });
                 return null;
             });
@@ -381,8 +381,8 @@ public class InvoiceCommand implements CommandExecutor, TabCompleter {
         plugin.getLnService().createInvoiceForPlayer(creator, config.amount, memo)
             .thenAccept(response -> {
                 if (!response.success || response.data == null) {
-                    Bukkit.getScheduler().runTask(plugin, () -> {
-                        creator.sendMessage("§c✗ Failed to create invoice!");
+                    plugin.getScheduler().runTaskForPlayer(creator.getUniqueId(), p -> {
+                        p.sendMessage("§c✗ Failed to create invoice!");
                         plugin.getDebugLogger().error("Split invoice creation failed: " + response.error);
                     });
                     return;
@@ -406,44 +406,44 @@ public class InvoiceCommand implements CommandExecutor, TabCompleter {
                 // Record metrics
                 plugin.getMetrics().recordInvoiceCreated(creator.getUniqueId(), config.amount);
 
-                Bukkit.getScheduler().runTask(plugin, () -> {
-                    creator.sendMessage("§a§l✓ SPLIT INVOICE CREATED!");
-                    creator.sendMessage("");
-                    creator.sendMessage("§7Amount: §f" + config.amount + " sats");
-                    creator.sendMessage("§7Recipients: §f" + config.splits.size());
-                    creator.sendMessage("");
-                    creator.sendMessage("§eSplit breakdown:");
+                plugin.getScheduler().runTaskForPlayer(creator.getUniqueId(), p -> {
+                    p.sendMessage("§a§l✓ SPLIT INVOICE CREATED!");
+                    p.sendMessage("");
+                    p.sendMessage("§7Amount: §f" + config.amount + " sats");
+                    p.sendMessage("§7Recipients: §f" + config.splits.size());
+                    p.sendMessage("");
+                    p.sendMessage("§eSplit breakdown:");
                     for (SplitEntry entry : config.splits) {
                         long splitAmount = (config.amount * entry.percent) / 100;
-                        creator.sendMessage("§7  " + entry.playerName + ": §f" + 
+                        p.sendMessage("§7  " + entry.playerName + ": §f" + 
                             entry.percent + "% §7(§f" + splitAmount + " sats§7)");
                     }
-                    creator.sendMessage("");
+                    p.sendMessage("");
                     
                     if (bolt11 != null && !bolt11.isEmpty()) {
-                        creator.sendMessage("§7Invoice: §f" + bolt11.substring(0, Math.min(50, bolt11.length())) + "...");
-                        creator.sendMessage("");
+                        p.sendMessage("§7Invoice: §f" + bolt11.substring(0, Math.min(50, bolt11.length())) + "...");
+                        p.sendMessage("");
                         
                         // Generate QR code
                         try {
-                            boolean qrSuccess = QRMapRenderer.createMapForPlayer(plugin, creator, bolt11, "payment");
+                            boolean qrSuccess = QRMapRenderer.createMapForPlayer(plugin, p, bolt11, "payment");
                             if (qrSuccess) {
-                                creator.sendMessage("§a✓ QR code added to inventory!");
-                                creator.sendMessage("");
+                                p.sendMessage("§a✓ QR code added to inventory!");
+                                p.sendMessage("");
                             }
                         } catch (Exception e) {
                             plugin.getDebugLogger().warn("Failed to create QR code: " + e.getMessage());
                         }
                     }
                     
-                    creator.sendMessage("§7✓ Payment monitoring active via WebSocket");
-                    creator.sendMessage("§7When paid, funds will automatically");
-                    creator.sendMessage("§7distribute to all recipients.");
+                    p.sendMessage("§7✓ Payment monitoring active via WebSocket");
+                    p.sendMessage("§7When paid, funds will automatically");
+                    p.sendMessage("§7distribute to all recipients.");
                 });
             })
             .exceptionally(ex -> {
-                Bukkit.getScheduler().runTask(plugin, () -> {
-                    creator.sendMessage("§c✗ Error creating split invoice: " + ex.getMessage());
+                plugin.getScheduler().runTaskForPlayer(creator.getUniqueId(), p -> {
+                    p.sendMessage("§c✗ Error creating split invoice: " + ex.getMessage());
                     plugin.getDebugLogger().error("Split invoice creation failed", ex);
                 });
                 return null;
@@ -500,26 +500,26 @@ public class InvoiceCommand implements CommandExecutor, TabCompleter {
                 
                 // Notify creator
                 Player creator = Bukkit.getPlayer(config.creatorUuid);
-                if (creator != null && creator.isOnline()) {
-                    Bukkit.getScheduler().runTask(plugin, () -> {
-                        creator.sendMessage("§a§l✓ SPLIT PAYMENT DISTRIBUTED!");
-                        creator.sendMessage("§7Total: §f" + config.totalAmount + " sats");
-                        creator.sendMessage("§7Recipients: §f" + config.splits.size());
+                if (creator != null) {
+                    plugin.getScheduler().runTaskForPlayer(config.creatorUuid, p -> {
+                        p.sendMessage("§a§l✓ SPLIT PAYMENT DISTRIBUTED!");
+                        p.sendMessage("§7Total: §f" + config.totalAmount + " sats");
+                        p.sendMessage("§7Recipients: §f" + config.splits.size());
                     });
                 }
 
                 // Notify all recipients
                 for (SplitEntry entry : config.splits) {
                     Player recipient = Bukkit.getPlayer(entry.playerUuid);
-                    if (recipient != null && recipient.isOnline()) {
+                    if (recipient != null) {
                         long splitAmount = (config.totalAmount * entry.percent) / 100;
-                        Bukkit.getScheduler().runTask(plugin, () -> {
-                            recipient.sendMessage("§a§l⚡ SPLIT PAYMENT RECEIVED!");
-                            recipient.sendMessage("§7Amount: §f+" + splitAmount + " sats §7(" + entry.percent + "%)");
-                            recipient.sendMessage("§7From: §f" + config.memo);
+                        plugin.getScheduler().runTaskForPlayer(entry.playerUuid, p -> {
+                            p.sendMessage("§a§l⚡ SPLIT PAYMENT RECEIVED!");
+                            p.sendMessage("§7Amount: §f+" + splitAmount + " sats §7(" + entry.percent + "%)");
+                            p.sendMessage("§7From: §f" + config.memo);
                             
                             try {
-                                recipient.playSound(recipient.getLocation(), "entity.experience_orb.pickup", 1.0f, 1.0f);
+                                p.playSound(p.getLocation(), "entity.experience_orb.pickup", 1.0f, 1.0f);
                             } catch (Exception ignored) {}
                         });
                     }

@@ -4,7 +4,6 @@ import com.crissuper20.lightning.LightningPlugin;
 import com.crissuper20.lightning.managers.WalletManager;
 import com.google.gson.JsonObject;
 import com.crissuper20.lightning.util.RateLimiter;
-import org.bukkit.Bukkit;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
@@ -57,21 +56,21 @@ public class BalanceCommand implements CommandExecutor {
             walletManager.getOrCreateWallet(player)
                 .thenAccept(wallet -> {
                     if (wallet.has("id")) {
-                        Bukkit.getScheduler().runTask(plugin, () -> {
-                            player.sendMessage("§aWallet created! Checking balance...");
+                        plugin.getScheduler().runTaskForPlayer(player.getUniqueId(), p -> {
+                            p.sendMessage("§aWallet created! Checking balance...");
                             // Now fetch balance
-                            fetchAndDisplayBalance(player);
+                            fetchAndDisplayBalance(p);
                         });
                     } else {
-                        Bukkit.getScheduler().runTask(plugin, () -> {
-                            player.sendMessage("§cFailed to create wallet. Please contact an admin.");
+                        plugin.getScheduler().runTaskForPlayer(player.getUniqueId(), p -> {
+                            p.sendMessage("§cFailed to create wallet. Please contact an admin.");
                         });
                     }
                 })
                 .exceptionally(ex -> {
-                    Bukkit.getScheduler().runTask(plugin, () -> {
-                        player.sendMessage("§cError creating wallet: " + ex.getMessage());
-                        plugin.getDebugLogger().error("Wallet creation failed for " + player.getName(), ex);
+                    plugin.getScheduler().runTaskForPlayer(player.getUniqueId(), p -> {
+                        p.sendMessage("§cError creating wallet: " + ex.getMessage());
+                        plugin.getDebugLogger().error("Wallet creation failed for " + p.getName(), ex);
                     });
                     return null;
                 });
@@ -95,14 +94,14 @@ public class BalanceCommand implements CommandExecutor {
             
             plugin.getLnService().getWalletInfoForPlayer(player)
                 .thenAccept(response -> {
-                    Bukkit.getScheduler().runTask(plugin, () -> {
+                    plugin.getScheduler().runTaskForPlayer(player.getUniqueId(), p -> {
                         if (response.success && response.data != null) {
                             long balance = extractBalanceSats(response.data);
-                            displayBalance(player, balance, response.data);
+                            displayBalance(p, balance, response.data);
                         } else {
-                            player.sendMessage("§cFailed to fetch balance from Lightning backend.");
+                            p.sendMessage("§cFailed to fetch balance from Lightning backend.");
                             if (response != null) {
-                                player.sendMessage("§7" + response.error);
+                                p.sendMessage("§7" + response.error);
                             }
                         }
                     });
@@ -110,10 +109,10 @@ public class BalanceCommand implements CommandExecutor {
                 .exceptionally(ex -> {
                     plugin.getMetrics().recordApiError();
                     
-                    Bukkit.getScheduler().runTask(plugin, () -> {
-                        player.sendMessage("§cFailed to fetch balance from Lightning backend.");
-                        player.sendMessage("§7Error: " + ex.getMessage());
-                        plugin.getDebugLogger().error("Balance fetch failed for " + player.getName(), ex);
+                    plugin.getScheduler().runTaskForPlayer(player.getUniqueId(), p -> {
+                        p.sendMessage("§cFailed to fetch balance from Lightning backend.");
+                        p.sendMessage("§7Error: " + ex.getMessage());
+                        plugin.getDebugLogger().error("Balance fetch failed for " + p.getName(), ex);
                     });
                     return null;
                 });

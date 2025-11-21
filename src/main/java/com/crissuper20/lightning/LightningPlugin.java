@@ -7,8 +7,10 @@ import com.crissuper20.lightning.util.RetryHelper;
 import com.crissuper20.lightning.managers.LNService;
 import com.crissuper20.lightning.managers.WalletManager;
 import com.crissuper20.lightning.managers.WebSocketInvoiceMonitor;
+import com.crissuper20.lightning.scheduler.CommonScheduler;
+import com.crissuper20.lightning.scheduler.FoliaScheduler;
+import com.crissuper20.lightning.scheduler.PaperScheduler;
 import com.crissuper20.lightning.commands.*;
-import org.bukkit.Bukkit;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.util.concurrent.TimeUnit;
@@ -28,6 +30,7 @@ public final class LightningPlugin extends JavaPlugin {
     private WalletManager walletManager;
     private WebSocketInvoiceMonitor invoiceMonitor;
     private PluginMetrics metrics;
+    private CommonScheduler scheduler;
 
     // Command references
     private InvoiceCommand invoiceCommand;
@@ -48,6 +51,15 @@ public final class LightningPlugin extends JavaPlugin {
 
         // Create default config if it doesn't exist
         saveDefaultConfig();
+
+        // Initialize Scheduler
+        if (isFolia()) {
+            scheduler = new FoliaScheduler(this);
+            getLogger().info("Detected Folia! Using RegionScheduler.");
+        } else {
+            scheduler = new PaperScheduler(this);
+            getLogger().info("Using standard Bukkit Scheduler.");
+        }
 
         // Initialize debug logger first
         boolean debug = getConfig().getBoolean("debug", false);
@@ -197,15 +209,12 @@ public final class LightningPlugin extends JavaPlugin {
         }
 
         if (ownerUuid != null) {
-            Bukkit.getScheduler().runTask(this, () -> {
-                var player = Bukkit.getPlayer(ownerUuid);
-                if (player != null && player.isOnline()) {
-                    long displayAmount = Math.abs(amountSats);
-                    String msg = amountSats >= 0
-                            ? formatSuccess("Invoice paid! +" + displayAmount + " sats")
-                            : formatMessage("§cPayment sent -" + displayAmount + " sats");
-                    player.sendMessage(msg);
-                }
+            scheduler.runTaskForPlayer(ownerUuid, player -> {
+                long displayAmount = Math.abs(amountSats);
+                String msg = amountSats >= 0
+                        ? formatSuccess("Invoice paid! +" + displayAmount + " sats")
+                        : formatMessage("§cPayment sent -" + displayAmount + " sats");
+                player.sendMessage(msg);
             });
         } else {
             debugLogger.warning("Received payment for unknown wallet id " + walletId);
@@ -361,6 +370,10 @@ public final class LightningPlugin extends JavaPlugin {
         return invoiceCommand;
     }
 
+    public CommonScheduler getScheduler() {
+        return scheduler;
+    }
+
     // ================================================================
     // Message formatting helpers
     // ================================================================
@@ -381,5 +394,14 @@ public final class LightningPlugin extends JavaPlugin {
     // Static helper for when you don't have plugin instance
     public static String simpleFormat(String message) {
         return "§8[§eln§8]§r " + message;
+    }
+
+    private boolean isFolia() {
+        try {
+            Class.forName("io.papermc.paper.threadedregions.RegionizedServer");
+            return true;
+        } catch (ClassNotFoundException e) {
+            return false;
+        }
     }
 }

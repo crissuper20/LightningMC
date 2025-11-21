@@ -3,7 +3,6 @@ package com.crissuper20.lightning.managers;
 import com.crissuper20.lightning.LightningPlugin;
 import com.crissuper20.lightning.util.DebugLogger;
 import com.google.gson.*;
-import org.bukkit.Bukkit;
 
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -28,6 +27,9 @@ public class WebSocketInvoiceMonitor {
 
     // walletId -> monitor session
     private final ConcurrentHashMap<String, WebSocketSession> sessions = new ConcurrentHashMap<>();
+    
+    // Shared scheduler for all WebSocket sessions to avoid thread explosion
+    private final ScheduledExecutorService sharedScheduler;
 
     public WebSocketInvoiceMonitor(LightningPlugin plugin, String restBaseUrl, InvoiceListener listener) {
         this.plugin = plugin;
@@ -38,6 +40,15 @@ public class WebSocketInvoiceMonitor {
         this.client = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(10))
                 .build();
+                
+        // Create a fixed thread pool for WebSocket operations
+        // 4 threads should be sufficient for hundreds of connections as they are mostly idle
+        this.sharedScheduler = Executors.newScheduledThreadPool(4, r -> {
+            Thread t = new Thread(r);
+            t.setDaemon(true);
+            t.setName("InvoiceWS-Pool");
+            return t;
+        });
     }
 
     /**
@@ -73,6 +84,7 @@ public class WebSocketInvoiceMonitor {
             s.close();
         }
         sessions.clear();
+        sharedScheduler.shutdownNow();
     }
 
 // ============================================================
@@ -85,24 +97,16 @@ public class WebSocketInvoiceMonitor {
         private final String invoiceKey;
         private volatile WebSocket socket;
         private final AtomicBoolean connecting = new AtomicBoolean(false);
-        private final ScheduledExecutorService scheduler;
 
         public WebSocketSession(String walletId, String invoiceKey) {
             this.walletId = walletId;
             this.invoiceKey = invoiceKey;
-
-            this.scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
-                Thread t = new Thread(r);
-                t.setDaemon(true);
-                t.setName("InvoiceWS-" + walletId);
-                return t;
-            });
         }
 
         public void connect() {
             if (connecting.getAndSet(true)) return;
 
-            scheduler.execute(() -> {
+            sharedScheduler.execute(() -> {
                 try {
                     String url = websocketBaseUrl + "/api/v1/ws/" + invoiceKey;
                     debug.info("Connecting WebSocket for wallet=" + walletId + " url=" + url);
@@ -145,12 +149,11 @@ public class WebSocketInvoiceMonitor {
                 if (socket != null) socket.sendClose(WebSocket.NORMAL_CLOSURE, "plugin_shutdown");
             } catch (Exception ignored) {
             }
-
-            scheduler.shutdownNow();
+            // No need to shutdown scheduler here as it is shared
         }
 
         public void forceReconnect() {
-            scheduler.execute(() -> {
+            sharedScheduler.execute(() -> {
                 try {
                     if (socket != null) {
                         socket.sendClose(WebSocket.NORMAL_CLOSURE, "force_reconnect");
@@ -164,7 +167,7 @@ public class WebSocketInvoiceMonitor {
         }
 
         private void scheduleReconnect() {
-            scheduler.schedule(this::connect, 5, TimeUnit.SECONDS);
+            sharedScheduler.schedule(this::connect, 5, TimeUnit.SECONDS);
         }
 
 // ============================================================
@@ -201,7 +204,7 @@ public class WebSocketInvoiceMonitor {
                 long amountMsat = pay.get("amount").getAsLong();
 
                 // Dispatch to Bukkit main thread
-                Bukkit.getScheduler().runTask(plugin, () ->
+                plugin.getScheduler().runTask(() ->
                     listener.onInvoicePaid(checkingId, paymentHash, amountMsat, walletId)
                 );
 

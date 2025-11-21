@@ -6,7 +6,6 @@ import com.crissuper20.lightning.managers.WalletManager;
 import com.crissuper20.lightning.util.QRMapRenderer;
 import com.crissuper20.lightning.util.RateLimiter;
 import com.google.gson.JsonObject;
-import org.bukkit.Bukkit;
 import org.bukkit.Material;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
@@ -141,28 +140,28 @@ public class PayCommand implements CommandExecutor {
         
         walletManager.getBalance(player).thenAccept(balance -> {
             if (balance <= 0) {
-                Bukkit.getScheduler().runTask(plugin, () -> {
-                    player.sendMessage("§c✗ Insufficient balance!");
-                    player.sendMessage("§7Your balance: 0 sats");
-                    player.sendMessage("§7Create an invoice with §e/invoice §7to deposit funds.");
+                plugin.getScheduler().runTaskForPlayer(player.getUniqueId(), p -> {
+                    p.sendMessage("§c✗ Insufficient balance!");
+                    p.sendMessage("§7Your balance: 0 sats");
+                    p.sendMessage("§7Create an invoice with §e/invoice §7to deposit funds.");
                 });
                 return;
             }
             
             // Proceed with payment
-            Bukkit.getScheduler().runTask(plugin, () -> {
-                player.sendMessage("§eProcessing payment...");
-                player.sendMessage("§7Current balance: " + formatSats(balance));
+            plugin.getScheduler().runTaskForPlayer(player.getUniqueId(), p -> {
+                p.sendMessage("§eProcessing payment...");
+                p.sendMessage("§7Current balance: " + formatSats(balance));
                 
                 // Remove the map from inventory after reading
-                player.getInventory().setItemInMainHand(null);
-                player.sendMessage("§7QR map consumed.");
+                p.getInventory().setItemInMainHand(null);
+                p.sendMessage("§7QR map consumed.");
                 
-                sendPayment(player, finalBolt11);
+                sendPayment(p, finalBolt11);
             });
         }).exceptionally(ex -> {
-            Bukkit.getScheduler().runTask(plugin, () -> {
-                player.sendMessage("§cFailed to check balance. Please try again.");
+            plugin.getScheduler().runTaskForPlayer(player.getUniqueId(), p -> {
+                p.sendMessage("§cFailed to check balance. Please try again.");
                 plugin.getDebugLogger().error("Balance check failed", ex);
             });
             return null;
@@ -222,20 +221,20 @@ public class PayCommand implements CommandExecutor {
             
             lnService.payInvoiceForPlayer(player, bolt11)
                 .thenAccept(response -> {
-                    Bukkit.getScheduler().runTask(plugin, () -> {
-                        handlePaymentResponse(player, bolt11, response);
+                    plugin.getScheduler().runTaskForPlayer(player.getUniqueId(), p -> {
+                        handlePaymentResponse(p, bolt11, response);
                     });
                 })
                 .exceptionally(ex -> {
                     plugin.getMetrics().recordApiError();
                     
-                    Bukkit.getScheduler().runTask(plugin, () -> {
-                        player.sendMessage("§c✗ Payment failed!");
-                        player.sendMessage("§7Error: " + ex.getMessage());
+                    plugin.getScheduler().runTaskForPlayer(player.getUniqueId(), p -> {
+                        p.sendMessage("§c✗ Payment failed!");
+                        p.sendMessage("§7Error: " + ex.getMessage());
                         
                         // Detailed error logging
                         plugin.getLogger().severe("=== PAYMENT EXCEPTION ===");
-                        plugin.getLogger().severe("Player: " + player.getName());
+                        plugin.getLogger().severe("Player: " + p.getName());
                         plugin.getLogger().severe("Invoice: " + bolt11.substring(0, Math.min(50, bolt11.length())));
                         plugin.getLogger().severe("Exception: " + ex.getClass().getName());
                         plugin.getLogger().severe("Message: " + ex.getMessage());
@@ -294,8 +293,8 @@ public class PayCommand implements CommandExecutor {
         // Fetch updated balance
         walletManager.fetchBalanceFromLNbits(player)
             .thenAccept(newBalance -> {
-                Bukkit.getScheduler().runTask(plugin, () -> {
-                    player.sendMessage("§7New balance: §a" + formatSats(newBalance));
+                plugin.getScheduler().runTaskForPlayer(player.getUniqueId(), p -> {
+                    p.sendMessage("§7New balance: §a" + formatSats(newBalance));
                 });
             })
             .exceptionally(ex -> {
@@ -332,9 +331,9 @@ public class PayCommand implements CommandExecutor {
             
             player.sendMessage("§7Insufficient balance");
             walletManager.getBalance(player).thenAccept(balance -> {
-                Bukkit.getScheduler().runTask(plugin, () -> {
-                    player.sendMessage("§7Your balance: " + formatSats(balance));
-                    player.sendMessage("§7Deposit more with §e/invoice");
+                plugin.getScheduler().runTaskForPlayer(player.getUniqueId(), p -> {
+                    p.sendMessage("§7Your balance: " + formatSats(balance));
+                    p.sendMessage("§7Deposit more with §e/invoice");
                 });
             });
             

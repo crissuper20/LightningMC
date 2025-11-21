@@ -32,8 +32,5 @@ build/
 *.tmp
 out/
 logs/
-<<<<<<< HEAD
 temp/
-=======
-temp/
->>>>>>> parent of aa4c02e (made readme.md)
+bin/

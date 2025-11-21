@@ -185,7 +185,7 @@ public class AdminCommand implements CommandExecutor, TabCompleter {
         );
 
         allFutures.thenRun(() -> {
-            Bukkit.getScheduler().runTask(plugin, () -> {
+            plugin.getScheduler().runTask(() -> {
                 sender.sendMessage("§6§l=== Top Players Balances ===");
 
                 int rank = 1;
@@ -213,11 +213,11 @@ public class AdminCommand implements CommandExecutor, TabCompleter {
             sender.sendMessage("§eSyncing all wallet balances...");
 
             walletManager.syncAllBalancesAsync()
-                .thenAccept(result -> Bukkit.getScheduler().runTask(plugin, () -> {
+                .thenAccept(result -> plugin.getScheduler().runTask(() -> {
                     sender.sendMessage("§aBalance sync complete! (" + result.size() + " wallets)");
                 }))
                 .exceptionally(ex -> {
-                    Bukkit.getScheduler().runTask(plugin, () -> sender.sendMessage("§cSync failed: " + ex.getMessage()));
+                    plugin.getScheduler().runTask(() -> sender.sendMessage("§cSync failed: " + ex.getMessage()));
                     return null;
                 });
 
@@ -242,12 +242,12 @@ public class AdminCommand implements CommandExecutor, TabCompleter {
 
         walletManager.fetchBalanceFromLNbits(target)
             .thenAccept(balance -> {
-                Bukkit.getScheduler().runTask(plugin, () -> {
+                plugin.getScheduler().runTask(() -> {
                     sender.sendMessage("§a" + target.getName() + " balance: §f" + formatSats(balance));
                 });
             })
             .exceptionally(ex -> {
-                Bukkit.getScheduler().runTask(plugin, () -> {
+                plugin.getScheduler().runTask(() -> {
                     sender.sendMessage("§cFailed to sync balance: " + ex.getMessage());
                 });
                 return null;
@@ -261,7 +261,7 @@ public class AdminCommand implements CommandExecutor, TabCompleter {
 
         plugin.getLnService().getWalletInfoAsync()
             .thenAccept(response -> {
-                Bukkit.getScheduler().runTask(plugin, () -> {
+                plugin.getScheduler().runTask(() -> {
                     if (response.success) {
                         sender.sendMessage("§a✓ Backend is healthy!");
                         sender.sendMessage("§7Status: §f" + response.statusCode);
@@ -273,7 +273,7 @@ public class AdminCommand implements CommandExecutor, TabCompleter {
                 });
             })
             .exceptionally(ex -> {
-                Bukkit.getScheduler().runTask(plugin, () -> {
+                plugin.getScheduler().runTask(() -> {
                     sender.sendMessage("§c✗ Connection failed!");
                     sender.sendMessage("§7Error: §f" + ex.getMessage());
                 });

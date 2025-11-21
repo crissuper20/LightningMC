@@ -22,7 +22,7 @@ import java.util.concurrent.ConcurrentHashMap;
 public class WalletManager {
 
     private final LightningPlugin plugin;
-    private final File walletFile;
+    private final File userdataFolder;
     private final Map<String, WalletData> wallets = new ConcurrentHashMap<>();
     private final Map<String, String> walletOwnerLookup = new ConcurrentHashMap<>();
     private final HttpClient httpClient;
@@ -33,7 +33,7 @@ public class WalletManager {
 
     public WalletManager(LightningPlugin plugin) {
         this.plugin = plugin;
-        this.walletFile = new File(plugin.getDataFolder(), "wallets.json");
+        this.userdataFolder = new File(plugin.getDataFolder(), "userdata");
         this.debug = plugin.getDebugLogger().withPrefix("WalletManager");
         this.httpClient = HttpClient.newBuilder()
                 .version(HttpClient.Version.HTTP_1_1)
@@ -71,37 +71,44 @@ public class WalletManager {
         wallets.clear();
         walletOwnerLookup.clear();
 
-        try {
-            if (!walletFile.exists()) {
-                return;
-            }
-
-            try (FileReader reader = new FileReader(walletFile)) {
-                JsonObject root = plugin.getGson().fromJson(reader, JsonObject.class);
-                if (root == null) {
-                    debug.debug("wallets.json was empty");
-                    return;
-                }
-
-                for (String key : root.keySet()) {
-                    JsonObject obj = root.getAsJsonObject(key);
-                    wallets.put(
-                            key,
-                            new WalletData(
-                                    obj.get("walletId").getAsString(),
-                                    obj.get("adminKey").getAsString(),
-                                    obj.get("invoiceKey").getAsString(),
-                                    obj.get("ownerName").getAsString()
-                            )
-                    );
-                    walletOwnerLookup.put(obj.get("walletId").getAsString(), key);
-                }
-                debug.info("Loaded " + wallets.size() + " wallets from storage");
-            }
-        } catch (Exception e) {
-            plugin.getLogger().warning("Failed to load wallets.json: " + e.getMessage());
-            debug.error("Wallet load failure", e);
+        // Ensure userdata folder exists
+        if (!userdataFolder.exists()) {
+            userdataFolder.mkdirs();
         }
+
+        // Migration: Check for old wallets.json
+        File oldWalletFile = new File(plugin.getDataFolder(), "wallets.json");
+        if (oldWalletFile.exists()) {
+            migrateOldWallets(oldWalletFile);
+        }
+
+        // Load individual wallet files
+        File[] files = userdataFolder.listFiles((dir, name) -> name.endsWith(".json"));
+        if (files == null) return;
+
+        for (File file : files) {
+            try (FileReader reader = new FileReader(file)) {
+                JsonObject obj = plugin.getGson().fromJson(reader, JsonObject.class);
+                if (obj == null) continue;
+
+                // Filename is UUID.json
+                String uuid = file.getName().replace(".json", "");
+                
+                WalletData data = new WalletData(
+                        obj.get("walletId").getAsString(),
+                        obj.get("adminKey").getAsString(),
+                        obj.get("invoiceKey").getAsString(),
+                        obj.get("ownerName").getAsString()
+                );
+
+                wallets.put(uuid, data);
+                walletOwnerLookup.put(data.walletId, uuid);
+            } catch (Exception e) {
+                plugin.getLogger().warning("Failed to load wallet file " + file.getName() + ": " + e.getMessage());
+            }
+        }
+        
+        debug.info("Loaded " + wallets.size() + " wallets from storage");
 
         if (invoiceMonitor != null) {
             debug.debug("Re-attaching websocket monitor to existing wallets");
@@ -109,29 +116,45 @@ public class WalletManager {
         }
     }
 
-    private synchronized void save() {
-        try {
-            plugin.getDataFolder().mkdirs();
-            debug.debug("Persisting " + wallets.size() + " wallets to " + walletFile.getAbsolutePath());
-
-            JsonObject root = new JsonObject();
-            for (Map.Entry<String, WalletData> entry : wallets.entrySet()) {
-                JsonObject obj = new JsonObject();
-                WalletData w = entry.getValue();
-
-                obj.addProperty("walletId", w.walletId);
-                obj.addProperty("adminKey", w.adminKey);
-                obj.addProperty("invoiceKey", w.invoiceKey);
-                obj.addProperty("ownerName", w.ownerName);
-
-                root.add(entry.getKey(), obj);
+    private void migrateOldWallets(File oldFile) {
+        plugin.getLogger().info("Migrating wallets.json to individual files...");
+        try (FileReader reader = new FileReader(oldFile)) {
+            JsonObject root = plugin.getGson().fromJson(reader, JsonObject.class);
+            if (root != null) {
+                for (String key : root.keySet()) {
+                    JsonObject obj = root.getAsJsonObject(key);
+                    WalletData data = new WalletData(
+                            obj.get("walletId").getAsString(),
+                            obj.get("adminKey").getAsString(),
+                            obj.get("invoiceKey").getAsString(),
+                            obj.get("ownerName").getAsString()
+                    );
+                    // Save to new format
+                    saveWallet(key, data);
+                }
             }
+            // Rename old file to .bak
+            oldFile.renameTo(new File(plugin.getDataFolder(), "wallets.json.bak"));
+            plugin.getLogger().info("Migration complete. Old file renamed to wallets.json.bak");
+        } catch (Exception e) {
+            plugin.getLogger().severe("Migration failed: " + e.getMessage());
+        }
+    }
 
-            try (FileWriter writer = new FileWriter(walletFile)) {
-                writer.write(plugin.getGson().toJson(root));
+    private void saveWallet(String uuid, WalletData data) {
+        try {
+            File file = new File(userdataFolder, uuid + ".json");
+            JsonObject obj = new JsonObject();
+            obj.addProperty("walletId", data.walletId);
+            obj.addProperty("adminKey", data.adminKey);
+            obj.addProperty("invoiceKey", data.invoiceKey);
+            obj.addProperty("ownerName", data.ownerName);
+
+            try (FileWriter writer = new FileWriter(file)) {
+                writer.write(plugin.getGson().toJson(obj));
             }
         } catch (Exception e) {
-            plugin.getLogger().warning("Failed to save wallets.json: " + e.getMessage());
+            plugin.getLogger().warning("Failed to save wallet for " + uuid + ": " + e.getMessage());
             debug.error("Wallet save failure", e);
         }
     }
@@ -295,7 +318,7 @@ public class WalletManager {
 
             wallets.put(playerId, data);
             walletOwnerLookup.put(data.walletId, playerId);
-            save();
+            saveWallet(playerId, data);
 
             if (invoiceMonitor != null) {
                 invoiceMonitor.watchWallet(data.walletId, data.invoiceKey);
