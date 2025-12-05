@@ -55,7 +55,7 @@ The compiled `.jar` will be in `build/libs/`
 | `/balance` | Check your balance |
 | `/invoice <amount> [memo]` | Create invoice with QR code |
 | `/pay <bolt11>` | Pay a Lightning invoice |
-| `/splitinvoice` | Create split payment invoices |
+| `/invoice split` | Create split payment invoices |
 | `/lnadmin` | Admin controls (op only) |
 
 **Example:**
