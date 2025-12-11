@@ -7,12 +7,12 @@ debug: false
 # LNbits Backend Configuration
 lnbits:
   # LNbits host:port (without protocol) used when url is blank.
-  host: "127.0.0.1:5000"
+  host: ""
   use_https: true
 
   # Admin API key (from your LNbits admin wallet)
   # This key is used to create player wallets and health checks.
-  adminKey: "your-admin-key-here"
+  adminKey: ""
 
   # Invoice expiry seconds used when generating ln invoices.
   invoice_expiry_seconds: 3600
@@ -77,7 +77,7 @@ split_payments:
   default_commission_percent: 0
 
 # LNDHub Integration (for Zeus wallet)
-give_user_lndhub: true
+give_user_lndhub: false
 
 # LNDHub address (optional, defaults to lnbits.host)
 lndhub_address: ""

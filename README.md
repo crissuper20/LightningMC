@@ -90,6 +90,15 @@ give_user_lndhub: true
 - **Minecraft:** 1.16+
 - **LNbits:** Instance with admin API key
 
+## Developer API
+
+Want to integrate LightningMC with your plugin? See the **[API Documentation](API.md)** for:
+
+- Listening to `PaymentReceivedEvent` for payment notifications
+- Creating invoices and processing payments programmatically
+- Managing player wallets and balances
+- Complete examples (shops, donations, VIP access)
+
 ## Contributing
 
 Contributions welcome! Open an issue or PR ps

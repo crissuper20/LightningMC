@@ -10,6 +10,7 @@ import java.net.http.HttpResponse;
 import java.net.http.WebSocket;
 import java.net.http.WebSocketHandshakeException;
 import java.time.Duration;
+import java.util.List;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -19,8 +20,14 @@ public class WebSocketInvoiceMonitor {
         void onInvoicePaid(String checkingId, String paymentHash, long amountMsat, String walletId);
     }
 
+    public interface ConnectionListener {
+        void onConnected(String walletId);
+        void onDisconnected(String walletId);
+    }
+
     private final LightningPlugin plugin;
     private final InvoiceListener listener;
+    private final List<ConnectionListener> connectionListeners = new CopyOnWriteArrayList<>();
     private final HttpClient client;
     private final String websocketBaseUrl;
     private final DebugLogger debug;
@@ -56,16 +63,23 @@ public class WebSocketInvoiceMonitor {
      */
     public void watchWallet(String walletId, String invoiceKey) {
         if (walletId == null || invoiceKey == null || walletId.isBlank() || invoiceKey.isBlank()) {
-            plugin.getLogger().warning("Cannot watch wallet: walletId or invoiceKey is empty.");
             return;
         }
 
         debug.info("Registering websocket watcher wallet=" + walletId + " invoiceKey=" + maskKey(invoiceKey));
         sessions.computeIfAbsent(walletId, id -> {
-            WebSocketSession s = new WebSocketSession(walletId, invoiceKey);
-            s.connect();
-            return s;
+            WebSocketSession session = new WebSocketSession(id, invoiceKey);
+            session.connect();
+            return session;
         });
+    }
+
+    public void unwatchWallet(String walletId) {
+        WebSocketSession session = sessions.remove(walletId);
+        if (session != null) {
+            debug.info("Unregistering websocket watcher wallet=" + walletId);
+            session.close();
+        }
     }
 
     public int getActiveSessionCount() {
@@ -87,6 +101,22 @@ public class WebSocketInvoiceMonitor {
         sharedScheduler.shutdownNow();
     }
 
+    public void addConnectionListener(ConnectionListener listener) {
+        connectionListeners.add(listener);
+    }
+
+    private void notifyConnected(String walletId) {
+        for (ConnectionListener l : connectionListeners) {
+            try { l.onConnected(walletId); } catch (Exception e) { e.printStackTrace(); }
+        }
+    }
+
+    private void notifyDisconnected(String walletId) {
+        for (ConnectionListener l : connectionListeners) {
+            try { l.onDisconnected(walletId); } catch (Exception e) { e.printStackTrace(); }
+        }
+    }
+
 // ============================================================
 //                INTERNAL SESSION PER WALLET
 // ============================================================
@@ -97,6 +127,7 @@ public class WebSocketInvoiceMonitor {
         private final String invoiceKey;
         private volatile WebSocket socket;
         private final AtomicBoolean connecting = new AtomicBoolean(false);
+        private volatile boolean active = true;
 
         public WebSocketSession(String walletId, String invoiceKey) {
             this.walletId = walletId;
@@ -104,9 +135,14 @@ public class WebSocketInvoiceMonitor {
         }
 
         public void connect() {
+            if (!active) return;
             if (connecting.getAndSet(true)) return;
 
             sharedScheduler.execute(() -> {
+                if (!active) {
+                    connecting.set(false);
+                    return;
+                }
                 try {
                     String url = websocketBaseUrl + "/api/v1/ws/" + invoiceKey;
                     debug.info("Connecting WebSocket for wallet=" + walletId + " url=" + url);
@@ -145,14 +181,16 @@ public class WebSocketInvoiceMonitor {
         }
 
         public void close() {
+            active = false;
             try {
-                if (socket != null) socket.sendClose(WebSocket.NORMAL_CLOSURE, "plugin_shutdown");
+                if (socket != null) socket.sendClose(WebSocket.NORMAL_CLOSURE, "client_close");
             } catch (Exception ignored) {
             }
             // No need to shutdown scheduler here as it is shared
         }
 
         public void forceReconnect() {
+            if (!active) return;
             sharedScheduler.execute(() -> {
                 try {
                     if (socket != null) {
@@ -167,6 +205,7 @@ public class WebSocketInvoiceMonitor {
         }
 
         private void scheduleReconnect() {
+            if (!active) return;
             sharedScheduler.schedule(this::connect, 5, TimeUnit.SECONDS);
         }
 
@@ -177,6 +216,7 @@ public class WebSocketInvoiceMonitor {
         @Override
         public void onOpen(WebSocket webSocket) {
             debug.info("WebSocket opened for wallet=" + walletId);
+            notifyConnected(walletId);
             WebSocket.Listener.super.onOpen(webSocket);
         }
 
@@ -216,12 +256,14 @@ public class WebSocketInvoiceMonitor {
         @Override
         public void onError(WebSocket webSocket, Throwable error) {
             debug.error("WebSocket error for wallet=" + walletId, error);
+            notifyDisconnected(walletId);
             scheduleReconnect();
         }
 
         @Override
         public CompletionStage<?> onClose(WebSocket webSocket, int status, String reason) {
             debug.warn("WebSocket closed wallet=" + walletId + " status=" + status + " reason=" + reason);
+            notifyDisconnected(walletId);
             scheduleReconnect();
             return WebSocket.Listener.super.onClose(webSocket, status, reason);
         }

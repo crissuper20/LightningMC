@@ -138,29 +138,21 @@ public class BalanceCommand implements CommandExecutor {
     }
 
     private void displayBalance(Player player, long balanceSats, JsonObject walletInfo) {
-        player.sendMessage("§8§m                                    ");
-        player.sendMessage("§6§l Your Lightning Wallet");
-        player.sendMessage("");
+        var mm = plugin.getMessageManager();
         
-        // Show in sats
-        player.sendMessage("§eBalance: §f" + String.format("%,d", balanceSats) + " §7sats");
+        mm.send(player, "wallet.info.header");
+        mm.send(player, "wallet.info.title");
+        mm.send(player, "wallet.info.balance", 
+                net.kyori.adventure.text.minimessage.tag.resolver.Placeholder.parsed("balance", String.format("%,d", balanceSats)));
         
         // Also show in BTC if significant amount
         if (balanceSats >= 100_000) {
             double btc = balanceSats / 100_000_000.0;
-            player.sendMessage("§7        ≈ " + String.format("%.8f", btc) + " BTC");
+            mm.send(player, "wallet.info.balance-btc", 
+                    net.kyori.adventure.text.minimessage.tag.resolver.Placeholder.parsed("btc", String.format("%.8f", btc)));
         }
         
-        // Show in USD if we have exchange rate (future enhancement)
-        // double usd = balanceSats * getExchangeRate();
-        // player.sendMessage("§7        ≈ $" + String.format("%.2f", usd) + " USD");
-        
-        player.sendMessage("");
-        player.sendMessage("§7Use §f/invoice <amount> §7to deposit");
-        player.sendMessage("§7Use §f/pay <bolt11> §7to send payment");
-        if (walletInfo.has("name")) {
-            player.sendMessage("§7Wallet: §f" + walletInfo.get("name").getAsString());
-        }
-        player.sendMessage("§8§m                                    ");
+        mm.send(player, "wallet.info.footer");
+        mm.send(player, "wallet.info.header");
     }
 }

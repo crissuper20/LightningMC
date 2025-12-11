@@ -12,6 +12,8 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * LNService - Handles Lightning Network operations via LNbits API
@@ -35,6 +37,10 @@ public class LNService {
     private final String lnbitsUrl;
     private final String adminKey;
 
+    private final AtomicBoolean isHealthy = new AtomicBoolean(true);
+    private final AtomicLong lastHealthCheck = new AtomicLong(0);
+    private final AtomicBoolean checkInProgress = new AtomicBoolean(false);
+
     public LNService(LightningPlugin plugin, WalletManager walletManager, WebSocketInvoiceMonitor invoiceMonitor) {
         this.plugin = plugin;
         this.walletManager = walletManager;
@@ -49,6 +55,11 @@ public class LNService {
             host = (useHttps ? "https://" : "http://") + host;
         }
         
+        // Remove trailing slash if present
+        if (host.endsWith("/")) {
+            host = host.substring(0, host.length() - 1);
+        }
+        
         this.lnbitsUrl = host;
         this.adminKey = plugin.getConfig().getString("lnbits.adminKey", "");
 
@@ -59,6 +70,23 @@ public class LNService {
 
         debug.info("LNService initialized baseUrl=" + lnbitsUrl);
         
+        // Register connection listener for instant failure detection
+        this.invoiceMonitor.addConnectionListener(new WebSocketInvoiceMonitor.ConnectionListener() {
+            @Override
+            public void onConnected(String walletId) {
+                if (!isHealthy.get()) {
+                    // If we were marked as unhealthy, a successful connection suggests recovery
+                    triggerHealthCheck();
+                }
+            }
+
+            @Override
+            public void onDisconnected(String walletId) {
+                // Instant reaction to connection loss
+                triggerHealthCheck();
+            }
+        });
+
         startHealthChecks();
     }
 
@@ -67,13 +95,66 @@ public class LNService {
      */
     private void startHealthChecks() {
         plugin.getScheduler().runTaskTimerAsync(() -> {
-            try {
-                // Health checks can be implemented here if needed
-                debug.debug("Health check tick");
-            } catch (Exception e) {
-                plugin.getLogger().warning("Health check failed: " + e.getMessage());
+            // If we have active websockets, we rely on them as our heartbeat.
+            // We assume the server is healthy if connections are held open.
+            if (invoiceMonitor.getActiveSessionCount() > 0) {
+                // Only check if we currently think we are unhealthy (to recover state)
+                if (!isHealthy.get()) {
+                    performHealthCheck();
+                }
+                return;
             }
-        }, 200L, 200L);
+            
+            // No active connections (no players?) -> Poll to keep status updated
+            performHealthCheck();
+        }, 200L, 200L); // Check slot every 10 seconds
+    }
+
+    private void triggerHealthCheck() {
+        // Debounce: Don't check more than once every 5 seconds to avoid thundering herd
+        long now = System.currentTimeMillis();
+        if (now - lastHealthCheck.get() < 5000) return;
+        
+        plugin.getScheduler().runTaskAsync(this::performHealthCheck);
+    }
+
+    private void performHealthCheck() {
+        if (checkInProgress.getAndSet(true)) return;
+
+        debug.debug("Performing health check...");
+        getWalletInfo(adminKey).thenAccept(response -> {
+            boolean wasHealthy = isHealthy.get();
+            boolean nowHealthy = response.success;
+            
+            isHealthy.set(nowHealthy);
+            lastHealthCheck.set(System.currentTimeMillis());
+            
+            if (wasHealthy != nowHealthy) {
+                if (nowHealthy) {
+                    plugin.getLogger().info("LNbits connection restored!");
+                    // Optional: Force reconnect sockets if they are stuck?
+                    invoiceMonitor.forceReconnectNow();
+                } else {
+                    plugin.getLogger().warning("LNbits connection lost! (HTTP " + response.statusCode + ")");
+                }
+            }
+        }).exceptionally(ex -> {
+            boolean wasHealthy = isHealthy.get();
+            isHealthy.set(false);
+            lastHealthCheck.set(System.currentTimeMillis());
+            
+            if (wasHealthy) {
+                plugin.getLogger().warning("LNbits connection lost! " + ex.getMessage());
+            }
+            return null;
+        }).whenComplete((result, ex) -> {
+            // Reset flag after async operation completes, regardless of success or failure
+            checkInProgress.set(false);
+        });
+    }
+
+    public boolean isHealthy() {
+        return isHealthy.get();
     }
 
     // ================================================================
@@ -150,6 +231,7 @@ public class LNService {
                 })
                 .exceptionally(ex -> {
                     debug.error("Invoice creation exception", ex);
+                    triggerHealthCheck();
                     return LNResponse.<Invoice>error("Network error: " + ex.getMessage(), 0);
                 });
     }
@@ -217,6 +299,7 @@ public class LNService {
                 })
                 .exceptionally(ex -> {
                     debug.error("Payment exception", ex);
+                    triggerHealthCheck();
                     return LNResponse.<JsonObject>error("Network error: " + ex.getMessage(), 0);
                 });
     }
@@ -317,8 +400,18 @@ public class LNService {
     }
 
     /**
-     * Creates a new wallet for the player.
+     * Creates a new wallet for the player asynchronously.
+     * This is the preferred method to avoid blocking the main thread.
      */
+    public CompletableFuture<Boolean> createWalletAsync(Player player) {
+        return walletManager.createWalletForAsync(player.getUniqueId().toString(), player.getName());
+    }
+
+    /**
+     * Creates a new wallet for the player.
+     * @deprecated Use createWalletAsync instead to avoid main thread blocking.
+     */
+    @Deprecated
     public boolean createWallet(Player player) {
         return walletManager.createWalletFor(player.getUniqueId().toString(), player.getName());
     }

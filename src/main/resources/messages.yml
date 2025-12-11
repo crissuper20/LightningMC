@@ -1,0 +1,42 @@
+# Messages configuration using MiniMessage format
+# Documentation: https://docs.advntr.dev/minimessage/format.html
+
+prefix: "<dark_gray>[<yellow>LN<dark_gray>] <reset>"
+
+errors:
+  no-permission: "<red>You do not have permission to use this command."
+  player-only: "<red>This command can only be used by players."
+  wallet-not-found: "<red>You don't have a wallet yet. Use <yellow>/wallet<red> to create one."
+  invalid-amount: "<red>Invalid amount specified."
+  invalid-syntax: "<red>Invalid syntax. Usage: <yellow><usage>"
+  internal-error: "<red>An internal error occurred. Please contact an administrator."
+  lnbits-error: "<red>LNbits error: <message>"
+  rate-limit: "<red>You are doing that too fast! Please wait a moment."
+
+wallet:
+  checking: "<yellow>Checking balance with LNbits..."
+  created: "<green>Wallet created successfully!"
+  info:
+    header: "<strikethrough><dark_gray>                                    </strikethrough>"
+    title: "<gold><bold> Your Lightning Wallet"
+    balance: "<yellow>Balance: <white><balance> <gray>sats"
+    balance-btc: "<gray>        ≈ <btc> BTC"
+    footer:
+      - ""
+      - "<gray>Use <white>/invoice <amount> <gray>to deposit"
+      - "<gray>Use <white>/pay <bolt11> <gray>to send payment"
+  
+invoice:
+  created: "<green>Invoice created for <white><amount> <green>sats."
+  click-to-copy: "<yellow><bold>[CLICK TO COPY]"
+  hover-copy: "<gray>Click to copy Bolt11"
+  payment-received: "<green>Payment received! <white><amount> <green>sats added to your wallet."
+
+pay:
+  processing: "<yellow>Processing payment..."
+  success: "<green>Payment successful! Sent <white><amount> <green>sats."
+  sent: "<green>Sent <white><amount> <green>sats."
+
+admin:
+  reload: "<green>Configuration and messages reloaded."
+  wallet-count: "<yellow>Loaded <white><count> <yellow>wallets."

@@ -4,9 +4,11 @@ import com.crissuper20.lightning.util.DebugLogger;
 import com.crissuper20.lightning.util.PluginMetrics;
 import com.crissuper20.lightning.util.RetryHelper;
 
+import com.crissuper20.lightning.events.PaymentReceivedEvent;
 import com.crissuper20.lightning.managers.LNService;
 import com.crissuper20.lightning.managers.WalletManager;
 import com.crissuper20.lightning.managers.WebSocketInvoiceMonitor;
+import com.crissuper20.lightning.managers.MessageManager;
 import com.crissuper20.lightning.scheduler.CommonScheduler;
 import com.crissuper20.lightning.scheduler.FoliaScheduler;
 import com.crissuper20.lightning.scheduler.PaperScheduler;
@@ -29,6 +31,7 @@ public final class LightningPlugin extends JavaPlugin {
     private LNService lnService;
     private WalletManager walletManager;
     private WebSocketInvoiceMonitor invoiceMonitor;
+    private MessageManager messageManager;
     private PluginMetrics metrics;
     private CommonScheduler scheduler;
 
@@ -48,9 +51,21 @@ public final class LightningPlugin extends JavaPlugin {
     @Override
     public void onEnable() {
         instance = this;
-
-        // Create default config if it doesn't exist
+        
+        // Initialize logger
+        boolean debug = getConfig().getBoolean("debug", false);
+        this.debugLogger = new DebugLogger(getLogger(), debug);
+        
+        // Load config
         saveDefaultConfig();
+        if (!validateConfig()) {
+            getLogger().severe("Invalid configuration! Please check config.yml");
+            getServer().getPluginManager().disablePlugin(this);
+            return;
+        }
+
+        // Initialize MessageManager
+        this.messageManager = new MessageManager(this);
 
         // Initialize Scheduler
         if (isFolia()) {
@@ -62,9 +77,8 @@ public final class LightningPlugin extends JavaPlugin {
         }
 
         // Initialize debug logger first
-        boolean debug = getConfig().getBoolean("debug", false);
-        debugLogger = new DebugLogger(getLogger(), debug);
-
+        // (Moved to top of onEnable)
+        
         debugLogger.info("Lightning Plugin starting up...");
         debugLogger.info("Version: " + getDescription().getVersion());
 
@@ -183,6 +197,16 @@ public final class LightningPlugin extends JavaPlugin {
             }
         }
 
+        // Shutdown WalletManager (closes Hikari connection pool)
+        if (walletManager != null) {
+            try {
+                walletManager.shutdown();
+                debugLogger.info("WalletManager shutdown cleanly");
+            } catch (Exception e) {
+                getLogger().warning("Error during WalletManager shutdown: " + e.getMessage());
+            }
+        }
+
         // Shutdown retry helper
         try {
             RetryHelper.shutdown();
@@ -226,6 +250,10 @@ public final class LightningPlugin extends JavaPlugin {
             invoiceCommand.processSplitPayment(paymentHash, amountSats);
         }
         
+        // Fire PaymentReceivedEvent
+        PaymentReceivedEvent event = new PaymentReceivedEvent(ownerUuid, walletId, paymentHash, amountSats, checkingId);
+        getServer().getPluginManager().callEvent(event);
+        
         // The balance will be automatically synced by WalletManager when player checks
     }
 
@@ -260,10 +288,53 @@ public final class LightningPlugin extends JavaPlugin {
                     .initialDelay(1000)
                     .backoff(2.0);
 
-            // Test by checking if we can reach LNbits
+            // Build LNbits URL from config
+            String host = getConfig().getString("lnbits.host", "http://127.0.0.1:5000");
+            boolean useHttps = getConfig().getBoolean("lnbits.use_https", false);
+            if (!host.startsWith("http://") && !host.startsWith("https://")) {
+                host = (useHttps ? "https://" : "http://") + host;
+            }
+            if (host.endsWith("/")) {
+                host = host.substring(0, host.length() - 1);
+            }
+            final String lnbitsUrl = host;
+            final String adminKey = getConfig().getString("lnbits.adminKey", "");
+
+            // Test by actually calling GET /api/v1/wallet with the admin key
             var future = retryConfig.execute(() -> {
-                // Simple test - try to create a test wallet and delete it
-                return java.util.concurrent.CompletableFuture.completedFuture(true);
+                java.util.concurrent.CompletableFuture<Boolean> testFuture = new java.util.concurrent.CompletableFuture<>();
+                try {
+                    java.net.http.HttpClient httpClient = java.net.http.HttpClient.newBuilder()
+                            .connectTimeout(java.time.Duration.ofSeconds(10))
+                            .build();
+                    
+                    java.net.http.HttpRequest request = java.net.http.HttpRequest.newBuilder()
+                            .uri(java.net.URI.create(lnbitsUrl + "/api/v1/wallet"))
+                            .header("X-Api-Key", adminKey)
+                            .timeout(java.time.Duration.ofSeconds(10))
+                            .GET()
+                            .build();
+                    
+                    httpClient.sendAsync(request, java.net.http.HttpResponse.BodyHandlers.ofString())
+                            .thenAccept(response -> {
+                                if (response.statusCode() == 200) {
+                                    debugLogger.debug("LNbits wallet info retrieved successfully");
+                                    testFuture.complete(true);
+                                } else {
+                                    debugLogger.warn("LNbits returned status " + response.statusCode() + ": " + response.body());
+                                    testFuture.complete(false);
+                                }
+                            })
+                            .exceptionally(ex -> {
+                                debugLogger.error("HTTP request failed", ex);
+                                testFuture.complete(false);
+                                return null;
+                            });
+                } catch (Exception e) {
+                    debugLogger.error("Failed to create HTTP request", e);
+                    testFuture.complete(false);
+                }
+                return testFuture;
             });
             
             boolean result = future.get(15, TimeUnit.SECONDS);
@@ -360,6 +431,10 @@ public final class LightningPlugin extends JavaPlugin {
 
     public WebSocketInvoiceMonitor getInvoiceMonitor() {
         return invoiceMonitor;
+    }
+
+    public MessageManager getMessageManager() {
+        return messageManager;
     }
 
     public PluginMetrics getMetrics() {

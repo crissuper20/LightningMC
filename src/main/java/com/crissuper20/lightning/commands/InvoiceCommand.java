@@ -93,7 +93,7 @@ public class InvoiceCommand implements CommandExecutor, TabCompleter {
         // Validate arguments
         if (args.length < 1) {
             player.sendMessage(plugin.formatError("Usage: /invoice <amount> [memo]"));
-            player.sendMessage(plugin.formatMessage("§7Example: §e/invoice 1000 Coffee donation"));
+            player.sendMessage(plugin.formatMessage("§7Example: §e/invoice 1000 Hello World"));
             player.sendMessage(plugin.formatMessage("§7Split payment: §e/invoice split"));
             return true;
         }
@@ -214,11 +214,7 @@ public class InvoiceCommand implements CommandExecutor, TabCompleter {
         int expiryMinutes = expirySeconds / 60;
         player.sendMessage("§7Expires in: §f" + expiryMinutes + " minutes");
         player.sendMessage("");
-
-        // Inform about WebSocket monitoring
-        player.sendMessage("§7✓ Payment monitoring active via WebSocket");
-        player.sendMessage("§7Your balance will update automatically when paid!");
-        player.sendMessage("");
+        
 
         // Debug logging
         plugin.getDebugLogger().info(String.format(
@@ -696,11 +692,6 @@ public class InvoiceCommand implements CommandExecutor, TabCompleter {
         if (args.length == 1) {
             List<String> suggestions = new ArrayList<>();
             suggestions.add("split");
-            suggestions.add("1000");
-            suggestions.add("5000");
-            suggestions.add("10000");
-            suggestions.add("21000");
-            suggestions.add("100000");
             return suggestions;
         }
 

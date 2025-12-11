@@ -148,16 +148,16 @@ public class PayCommand implements CommandExecutor {
                 return;
             }
             
-            // Proceed with payment
+            // Proceed with payment - remove map now, restore on failure
             plugin.getScheduler().runTaskForPlayer(player.getUniqueId(), p -> {
                 p.sendMessage("§eProcessing payment...");
                 p.sendMessage("§7Current balance: " + formatSats(balance));
                 
-                // Remove the map from inventory after reading
+                // Remove the map and store it - will be restored on failure
+                ItemStack mapToConsume = p.getInventory().getItemInMainHand().clone();
                 p.getInventory().setItemInMainHand(null);
-                p.sendMessage("§7QR map consumed.");
                 
-                sendPayment(p, finalBolt11);
+                sendPayment(p, finalBolt11, mapToConsume);
             });
         }).exceptionally(ex -> {
             plugin.getScheduler().runTaskForPlayer(player.getUniqueId(), p -> {
@@ -207,8 +207,11 @@ public class PayCommand implements CommandExecutor {
 
     /**
      * Send the payment via LNService
+     * @param player The player sending the payment
+     * @param bolt11 The Lightning invoice to pay
+     * @param mapToConsume The QR map to remove on success, or restore on failure
      */
-    private void sendPayment(Player player, String bolt11) {
+    private void sendPayment(Player player, String bolt11, ItemStack mapToConsume) {
         try (var timer = plugin.getMetrics().startTiming("payment_send")) {
             
             plugin.getMetrics().recordPaymentAttempt(player.getUniqueId());
@@ -222,7 +225,7 @@ public class PayCommand implements CommandExecutor {
             lnService.payInvoiceForPlayer(player, bolt11)
                 .thenAccept(response -> {
                     plugin.getScheduler().runTaskForPlayer(player.getUniqueId(), p -> {
-                        handlePaymentResponse(p, bolt11, response);
+                        handlePaymentResponse(p, bolt11, response, mapToConsume);
                     });
                 })
                 .exceptionally(ex -> {
@@ -231,6 +234,9 @@ public class PayCommand implements CommandExecutor {
                     plugin.getScheduler().runTaskForPlayer(player.getUniqueId(), p -> {
                         p.sendMessage("§c✗ Payment failed!");
                         p.sendMessage("§7Error: " + ex.getMessage());
+                        
+                        // Give the map back to the player
+                        restoreMap(p, mapToConsume);
                         
                         // Detailed error logging
                         plugin.getLogger().severe("=== PAYMENT EXCEPTION ===");
@@ -247,8 +253,12 @@ public class PayCommand implements CommandExecutor {
 
     /**
      * Handle payment response from LNbits
+     * @param player The player who sent the payment
+     * @param bolt11 The Lightning invoice that was paid
+     * @param response The response from LNbits
+     * @param mapToConsume The QR map to consume on success
      */
-    private void handlePaymentResponse(Player player, String bolt11, LNService.LNResponse<JsonObject> response) {
+    private void handlePaymentResponse(Player player, String bolt11, LNService.LNResponse<JsonObject> response, ItemStack mapToConsume) {
         plugin.getDebugLogger().debug("=== PAYMENT RESPONSE ===");
         plugin.getDebugLogger().debug("Success: " + response.success);
         plugin.getDebugLogger().debug("Status Code: " + response.statusCode);
@@ -258,11 +268,13 @@ public class PayCommand implements CommandExecutor {
         }
         
         if (!response.success) {
+            // Payment failed - give the map back
+            restoreMap(player, mapToConsume);
             handlePaymentError(player, response);
             return;
         }
 
-        // Payment successful
+        // Payment successful - map already removed
         JsonObject paymentData = response.data;
         
         // Extract payment details
@@ -365,6 +377,31 @@ public class PayCommand implements CommandExecutor {
         }
         
         plugin.getMetrics().recordPaymentFailure(player.getUniqueId(), errorMsg);
+    }
+
+    /**
+     * Restore the QR map to the player after a failed payment.
+     * Tries to put it back in the main hand, or adds to inventory if hand is occupied.
+     */
+    private void restoreMap(Player player, ItemStack map) {
+        if (map == null) return;
+        
+        ItemStack currentHand = player.getInventory().getItemInMainHand();
+        if (currentHand == null || currentHand.getType() == Material.AIR) {
+            // Main hand is empty, put the map back there
+            player.getInventory().setItemInMainHand(map);
+            player.sendMessage("§7QR map returned to your hand.");
+        } else {
+            // Main hand is occupied, add to inventory
+            java.util.HashMap<Integer, ItemStack> overflow = player.getInventory().addItem(map);
+            if (overflow.isEmpty()) {
+                player.sendMessage("§7QR map returned to your inventory.");
+            } else {
+                // Inventory full, drop at player's feet
+                player.getWorld().dropItemNaturally(player.getLocation(), map);
+                player.sendMessage("§7QR map dropped at your feet (inventory full).");
+            }
+        }
     }
 
     private String formatSats(long sats) {
