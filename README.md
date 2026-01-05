@@ -85,7 +85,7 @@ MIT License
 
 ---
 
-**Built with** [LNbits](https://lnbits.com) • [ZXing](hdttps://github.com/zxing/zxing),
+**Built with** [LNbits](https://lnbits.com) • [ZXing](https://github.com/zxing/zxing),
 And beware, parts of this plugin were made with AI (spooky), expect unexpected behavior or results, DO NOT use real coins!!!
 
 *Whoever controls or has access to the LNBits instance, controls the wallets. 
