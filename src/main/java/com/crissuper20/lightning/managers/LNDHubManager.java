@@ -90,7 +90,7 @@ public class LNDHubManager {
         plugin.getDebugLogger().info("  Enabled: " + lndhubEnabled);
         plugin.getDebugLogger().info("  Address: " + lndhubHost);
         plugin.getDebugLogger().info("  Protocol: " + (lndhubUseHttps ? "https" : "http"));
-        plugin.getDebugLogger().info("Players can connect Zeus wallet to their in-game wallet");
+        plugin.getDebugLogger().info("Players can connect their wallet to their in-game wallet");
     }
     
     public boolean isEnabled() {
@@ -100,7 +100,7 @@ public class LNDHubManager {
     /**
      * Generate LNDHub URI for a player's wallet
      * 
-     * Format for Zeus: lndhub://admin:ADMIN_KEY@https://your-server.com/lndhub/ext/
+     * Format for Zeus (at least): lndhub://admin:ADMIN_KEY@https://your-server.com/lndhub/ext/
      * 
      * @param player The player
      * @return CompletableFuture with LNDHub URI string
@@ -192,12 +192,12 @@ public class LNDHubManager {
         return generateLNDHubURI(player)
             .thenApply(uri -> {
                 String[] lines = new String[]{
-                    "§6§l=== Zeus Wallet Connection ===",
+                    "§6§l=== LNDHub Wallet Connection ===",
                     "",
-                    "§7Connect your Zeus wallet to use your",
+                    "§7Connect your  wallet to use your",
                     "§7in-game Lightning wallet on your phone!",
                     "",
-                    "§eSteps:",
+                    "§eSteps: (using Zeus wallet)",
                     "§71. Install Zeus from https://zeusln.com",
                     "§72. Open Zeus → Add Node → Scan LNDHub QR",
                     "§73. Use §f/wallet givelogin qr §7to get QR code",

@@ -15,11 +15,21 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 public class SQLiteWalletStorage implements WalletStorage {
 
     private final LightningPlugin plugin;
     private HikariDataSource dataSource;
+    
+    // Dedicated executor for database operations to avoid starving ForkJoinPool
+    private final ExecutorService dbExecutor = Executors.newFixedThreadPool(2, r -> {
+        Thread t = new Thread(r, "LightningDB-Worker");
+        t.setDaemon(true);
+        return t;
+    });
 
     public SQLiteWalletStorage(LightningPlugin plugin) {
         this.plugin = plugin;
@@ -53,6 +63,9 @@ public class SQLiteWalletStorage implements WalletStorage {
                     "owner_name VARCHAR(64) NOT NULL" +
                     ")");
             
+            // Create index on wallet_id for faster lookups during payment notifications
+            stmt.execute("CREATE INDEX IF NOT EXISTS idx_wallet_id ON wallets(wallet_id)");
+            
         } catch (SQLException e) {
             plugin.getLogger().severe("Failed to initialize database: " + e.getMessage());
             e.printStackTrace();
@@ -61,6 +74,17 @@ public class SQLiteWalletStorage implements WalletStorage {
 
     @Override
     public void shutdown() {
+        // Shutdown executor gracefully
+        dbExecutor.shutdown();
+        try {
+            if (!dbExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
+                dbExecutor.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            dbExecutor.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
+        
         if (dataSource != null && !dataSource.isClosed()) {
             dataSource.close();
         }
@@ -68,7 +92,7 @@ public class SQLiteWalletStorage implements WalletStorage {
 
     @Override
     public CompletableFuture<Void> saveWallet(WalletData data) {
-        return CompletableFuture.runAsync(() -> saveWalletSync(data));
+        return CompletableFuture.runAsync(() -> saveWalletSync(data), dbExecutor);
     }
 
     @Override
@@ -118,7 +142,7 @@ public class SQLiteWalletStorage implements WalletStorage {
                 plugin.getLogger().severe("Failed to load wallet for " + playerUuid + ": " + e.getMessage());
             }
             return null;
-        });
+        }, dbExecutor);
     }
 
     @Override
@@ -135,7 +159,7 @@ public class SQLiteWalletStorage implements WalletStorage {
                 e.printStackTrace();
                 return false;
             }
-        });
+        }, dbExecutor);
     }
 
     @Override
@@ -163,6 +187,6 @@ public class SQLiteWalletStorage implements WalletStorage {
                 plugin.getLogger().severe("Failed to load all wallets: " + e.getMessage());
             }
             return results;
-        });
+        }, dbExecutor);
     }
 }

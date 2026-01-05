@@ -10,8 +10,6 @@ import org.bukkit.event.Listener;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 
-import java.io.File;
-import java.io.FileReader;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -28,7 +26,6 @@ import com.crissuper20.lightning.storage.WalletStorage;
 public class WalletManager implements Listener {
 
     private final LightningPlugin plugin;
-    private final File userdataFolder;
     private final Map<String, WalletData> wallets = new ConcurrentHashMap<>();
     private final Map<String, String> walletOwnerLookup = new ConcurrentHashMap<>();
     private final HttpClient httpClient;
@@ -39,12 +36,22 @@ public class WalletManager implements Listener {
     private final WalletStorage storage;
 
     public WalletManager(LightningPlugin plugin) {
+        this(plugin, new SQLiteWalletStorage(plugin), HttpClient.newBuilder()
+                .connectTimeout(Duration.ofSeconds(10))
+                .build());
+    }
+
+    /**
+     * Constructor for dependency injection (primarily for testing).
+     * 
+     * @param plugin the plugin instance
+     * @param storage the wallet storage implementation
+     * @param httpClient the HTTP client for API calls
+     */
+    public WalletManager(LightningPlugin plugin, WalletStorage storage, HttpClient httpClient) {
         this.plugin = plugin;
         this.debug = plugin.getDebugLogger().withPrefix("WalletMgr");
-        this.userdataFolder = new File(plugin.getDataFolder(), "userdata");
-        this.httpClient = HttpClient.newBuilder()
-                .connectTimeout(Duration.ofSeconds(10))
-                .build();
+        this.httpClient = httpClient;
 
         // Load config
         String host = plugin.getConfig().getString("lnbits.host", "http://127.0.0.1:5000");
@@ -64,7 +71,7 @@ public class WalletManager implements Listener {
         this.masterAdminKey = plugin.getConfig().getString("lnbits.adminKey");
 
         // Initialize storage
-        this.storage = new SQLiteWalletStorage(plugin);
+        this.storage = storage;
         this.storage.init();
 
         load();
@@ -113,62 +120,9 @@ public class WalletManager implements Listener {
     // FILE LOADING / SAVING
     // -----------------------------------------------------
     private void load() {
-        // 1. Load from Database first
-        try {
-            storage.loadAllWallets().thenAccept(loadedWallets -> {
-                for (WalletData data : loadedWallets) {
-                    wallets.put(data.playerUuid.toString(), data);
-                    walletOwnerLookup.put(data.walletId, data.playerUuid.toString());
-                }
-                debug.info("Loaded " + wallets.size() + " wallets from database.");
-                
-                // 2. Check for migration from files
-                migrateFromFiles();
-            }).join(); // Wait for initial load
-        } catch (Exception e) {
-            debug.error("Failed to load wallets from DB", e);
-        }
+        debug.info("WalletManager initialized. Wallets will be loaded on player join.");
     }
 
-    private void migrateFromFiles() {
-        if (!userdataFolder.exists()) return;
-        
-        File[] files = userdataFolder.listFiles((dir, name) -> name.endsWith(".json"));
-        if (files == null || files.length == 0) return;
-
-        debug.info("Found " + files.length + " legacy wallet files. Migrating to database...");
-        
-        int migrated = 0;
-        for (File f : files) {
-            try (FileReader reader = new FileReader(f)) {
-                WalletData data = plugin.getGson().fromJson(reader, WalletData.class);
-                if (data != null && data.walletId != null) {
-                    String uuidStr = f.getName().replace(".json", "");
-                    try {
-                        data.playerUuid = UUID.fromString(uuidStr);
-                        
-                        // Save to DB
-                        storage.saveWalletSync(data);
-                        
-                        // Update memory if not already present
-                        wallets.putIfAbsent(uuidStr, data);
-                        walletOwnerLookup.putIfAbsent(data.walletId, uuidStr);
-                        
-                        // Rename file to indicate migration
-                        f.renameTo(new File(f.getParent(), f.getName() + ".migrated"));
-                        migrated++;
-                        
-                    } catch (IllegalArgumentException ex) {
-                        debug.warning("Invalid UUID filename during migration: " + f.getName());
-                    }
-                }
-            } catch (Exception e) {
-                debug.error("Failed to migrate wallet: " + f.getName(), e);
-            }
-        }
-        debug.info("Migration complete. Migrated " + migrated + " wallets.");
-    }
-    
     public void attachInvoiceMonitor(WebSocketInvoiceMonitor monitor) {
         this.invoiceMonitor = monitor;
         // Watch online players only
@@ -182,17 +136,55 @@ public class WalletManager implements Listener {
 
     @EventHandler
     public void onPlayerJoin(PlayerJoinEvent event) {
-        WalletData data = wallets.get(event.getPlayer().getUniqueId().toString());
-        if (data != null && invoiceMonitor != null) {
-            invoiceMonitor.watchWallet(data.walletId, data.invoiceKey);
+        Player player = event.getPlayer();
+        String playerId = player.getUniqueId().toString();
+        
+        // Check if wallet is already in cache
+        WalletData cachedData = wallets.get(playerId);
+        if (cachedData != null) {
+            // Already cached, just start the WebSocket watcher
+            if (invoiceMonitor != null) {
+                invoiceMonitor.watchWallet(cachedData.walletId, cachedData.invoiceKey);
+            }
+            return;
         }
+        
+        // Load wallet from database asynchronously
+        storage.loadWallet(player.getUniqueId()).thenAccept(data -> {
+            if (data != null) {
+                // Cache the wallet
+                wallets.put(playerId, data);
+                walletOwnerLookup.put(data.walletId, playerId);
+                debug.debug("Loaded wallet for " + player.getName() + " from database");
+                
+                // Start WebSocket watcher
+                if (invoiceMonitor != null) {
+                    invoiceMonitor.watchWallet(data.walletId, data.invoiceKey);
+                }
+            } else {
+                debug.debug("No wallet found for " + player.getName() + " - they can create one with /wallet create");
+            }
+        }).exceptionally(ex -> {
+            debug.error("Failed to load wallet for " + player.getName(), ex);
+            return null;
+        });
     }
 
     @EventHandler
     public void onPlayerQuit(PlayerQuitEvent event) {
-        WalletData data = wallets.get(event.getPlayer().getUniqueId().toString());
+        String playerId = event.getPlayer().getUniqueId().toString();
+        WalletData data = wallets.get(playerId);
+        
         if (data != null && invoiceMonitor != null) {
             invoiceMonitor.unwatchWallet(data.walletId);
+        }
+        
+        // Optionally remove from cache to save memory
+        // Comment out these lines if you want to keep wallets cached for players who rejoin quickly
+        if (data != null) {
+            wallets.remove(playerId);
+            walletOwnerLookup.remove(data.walletId);
+            debug.debug("Unloaded wallet for " + event.getPlayer().getName() + " from cache");
         }
     }
 
@@ -269,14 +261,55 @@ public class WalletManager implements Listener {
         return Collections.unmodifiableMap(wallets);
     }
 
+    /**
+     * Check if player has a wallet, checks cache first, then database.
+     * @return CompletableFuture that resolves to true if wallet exists
+     */
+    public CompletableFuture<Boolean> hasWalletAsync(UUID uuid) {
+        // Check cache first
+        if (wallets.containsKey(uuid.toString())) {
+            return CompletableFuture.completedFuture(true);
+        }
+        // Check database
+        return storage.hasWallet(uuid);
+    }
+
+    public CompletableFuture<Boolean> hasWalletAsync(Player player) {
+        return hasWalletAsync(player.getUniqueId());
+    }
+
+    /**
+     * Check if an online player has a wallet (cache-only check).
+     * This is safe for online players as their wallets are loaded on join.
+     * For offline players, use {@link #hasWalletAsync(UUID)} instead.
+     * 
+     * @param uuid the player's UUID
+     * @return true if wallet is in cache
+     */
     public boolean hasWallet(UUID uuid) {
-        return hasWallet(uuid.toString());
+        return wallets.containsKey(uuid.toString());
     }
 
+    /**
+     * Check if an online player has a wallet (cache-only check).
+     * This is safe for online players as their wallets are loaded on join.
+     * For offline players, use {@link #hasWalletAsync(Player)} instead.
+     * 
+     * @param player the player to check
+     * @return true if wallet is in cache
+     */
     public boolean hasWallet(Player player) {
-        return hasWallet(player.getUniqueId().toString());
+        return wallets.containsKey(player.getUniqueId().toString());
     }
 
+    /**
+     * Check if an online player has a wallet (cache-only check).
+     * This is safe for online players as their wallets are loaded on join.
+     * For offline players, use {@link #hasWalletAsync(UUID)} instead.
+     * 
+     * @param playerId the player's UUID as string
+     * @return true if wallet is in cache
+     */
     public boolean hasWallet(String playerId) {
         return wallets.containsKey(playerId);
     }
@@ -295,32 +328,49 @@ public class WalletManager implements Listener {
     public CompletableFuture<JsonObject> getOrCreateWallet(Player player) {
         String playerId = player.getUniqueId().toString();
 
-        if (hasWallet(playerId)) {
-            // Wallet exists, return immediately
-            WalletData data = wallets.get(playerId);
+        // Check cache first
+        WalletData cachedData = wallets.get(playerId);
+        if (cachedData != null) {
+            // Wallet exists in cache, return immediately
             JsonObject json = new JsonObject();
-            json.addProperty("id", data.walletId);
-            json.addProperty("adminkey", data.adminKey);
-            json.addProperty("inkey", data.invoiceKey);
-            json.addProperty("owner", data.ownerName);
+            json.addProperty("id", cachedData.walletId);
+            json.addProperty("adminkey", cachedData.adminKey);
+            json.addProperty("inkey", cachedData.invoiceKey);
+            json.addProperty("owner", cachedData.ownerName);
             return CompletableFuture.completedFuture(json);
         }
 
-        // Wallet doesn't exist, create it asynchronously
-        debug.debug("Wallet missing for " + player.getName() + " – creating now");
-        return createWalletForAsync(playerId, player.getName())
-                .thenApply(success -> {
-                    if (!success) {
-                        throw new IllegalStateException("Failed to create wallet for " + player.getName());
-                    }
-                    WalletData data = wallets.get(playerId);
-                    JsonObject json = new JsonObject();
-                    json.addProperty("id", data.walletId);
-                    json.addProperty("adminkey", data.adminKey);
-                    json.addProperty("inkey", data.invoiceKey);
-                    json.addProperty("owner", data.ownerName);
-                    return json;
-                });
+        // Check database, then create if not found
+        return storage.loadWallet(player.getUniqueId()).thenCompose(data -> {
+            if (data != null) {
+                // Found in database, cache it and return
+                wallets.put(playerId, data);
+                walletOwnerLookup.put(data.walletId, playerId);
+                
+                JsonObject json = new JsonObject();
+                json.addProperty("id", data.walletId);
+                json.addProperty("adminkey", data.adminKey);
+                json.addProperty("inkey", data.invoiceKey);
+                json.addProperty("owner", data.ownerName);
+                return CompletableFuture.completedFuture(json);
+            }
+            
+            // Wallet doesn't exist, create it asynchronously
+            debug.debug("Wallet missing for " + player.getName() + " – creating now");
+            return createWalletForAsync(playerId, player.getName())
+                    .thenApply(success -> {
+                        if (!success) {
+                            throw new IllegalStateException("Failed to create wallet for " + player.getName());
+                        }
+                        WalletData newData = wallets.get(playerId);
+                        JsonObject json = new JsonObject();
+                        json.addProperty("id", newData.walletId);
+                        json.addProperty("adminkey", newData.adminKey);
+                        json.addProperty("inkey", newData.invoiceKey);
+                        json.addProperty("owner", newData.ownerName);
+                        return json;
+                    });
+        });
     }
 
     public CompletableFuture<Long> getBalance(Player player) {

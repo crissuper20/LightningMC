@@ -12,13 +12,12 @@ Integrate the Lightning Network as your Minecraft server's economy. Create and p
 
 - **Auto Wallets** - Every player gets their own Lightning wallet
 - **QR Invoices** - Scannable QR codes rendered on in-game maps
-- **Real Bitcoin** - Actual Lightning payments (testnet/mainnet)
-- **Tor Support** - Privacy-focused connections
-- **LNDHub** - For wallet integration
+- **Real Lightning network** - Actual Lightning payments
+- **LNDHub** - For wallet integration on your phone*
 
 ## Quick Start
 
-1. Download latest `.jar` from [Releases](../../releases)
+1. Download latest `.jar` from Releases tab
 2. Place in `plugins/` folder
 3. Configure `plugins/LightningMC/config.yml`:
 
@@ -63,32 +62,10 @@ The compiled `.jar` will be in `build/libs/`
 /invoice 1000 memo
 ```
 
-## Key Config Options
-
-```yaml
-# Rate limits (per player/minute)
-rate_limits:
-  invoices_per_minute: 5
-  payments_per_minute: 10
-
-# Transaction limits (sats)
-limits:
-  min_invoice_amount: 1
-  max_invoice_amount: 1000000
-
-# Split payments marketplace
-split_payments:
-  server_wallet_uuid: ""
-  default_commission_percent: 0
-
-# LNDHub (Zeus wallet)
-give_user_lndhub: true
-```
-
 ## Requirements
 
 - **Minecraft:** 1.16+
-- **LNbits:** Instance with admin API key
+- **LNbits:** Instance with admin API key, you can use [demo.lnbits.com](https://demo.lnbits.com) for testing
 
 ## Developer API
 
@@ -97,11 +74,10 @@ Want to integrate LightningMC with your plugin? See the **[API Documentation](AP
 - Listening to `PaymentReceivedEvent` for payment notifications
 - Creating invoices and processing payments programmatically
 - Managing player wallets and balances
-- Complete examples (shops, donations, VIP access)
-
+ 
 ## Contributing
 
-Contributions welcome! Open an issue or PR ps
+Contributions welcome! Open an issue or PR pls!
 
 ## License
 
@@ -109,4 +85,7 @@ MIT License
 
 ---
 
-**Built with** [LNbits](https://lnbits.com) • [ZXing](https://github.com/zxing/zxing)
+**Built with** [LNbits](https://lnbits.com) • [ZXing](hdttps://github.com/zxing/zxing),
+And beware, parts of this plugin were made with AI (spooky), expect unexpected behavior or results, DO NOT use real coins!!!
+
+*Whoever controls or has access to the LNBits instance, controls the wallets. 

@@ -42,9 +42,20 @@ public class LNService {
     private final AtomicBoolean checkInProgress = new AtomicBoolean(false);
 
     public LNService(LightningPlugin plugin, WalletManager walletManager, WebSocketInvoiceMonitor invoiceMonitor) {
+        this(plugin, walletManager, invoiceMonitor, HttpClient.newBuilder()
+                .version(HttpClient.Version.HTTP_1_1)
+                .connectTimeout(Duration.ofSeconds(30))
+                .build());
+    }
+
+    /**
+     * Changed for more testing.
+     */
+    public LNService(LightningPlugin plugin, WalletManager walletManager, WebSocketInvoiceMonitor invoiceMonitor, HttpClient httpClient) {
         this.plugin = plugin;
         this.walletManager = walletManager;
         this.invoiceMonitor = invoiceMonitor;
+        this.httpClient = httpClient;
         this.debug = plugin.getDebugLogger().withPrefix("LNService");
 
         // Build LNbits URL from config
@@ -62,11 +73,6 @@ public class LNService {
         
         this.lnbitsUrl = host;
         this.adminKey = plugin.getConfig().getString("lnbits.adminKey", "");
-
-        this.httpClient = HttpClient.newBuilder()
-                .version(HttpClient.Version.HTTP_1_1)
-                .connectTimeout(Duration.ofSeconds(30))
-                .build();
 
         debug.info("LNService initialized baseUrl=" + lnbitsUrl);
         
